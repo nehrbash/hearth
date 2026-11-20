@@ -23,6 +23,11 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--listen" | "--ui-socket" => {
+                options.channel_socket =
+                    Some(args.next().context("--ui-socket requires a path")?.into())
+            }
+            "--channel" => options.channel = args.next().context("--channel requires a name")?,
             "--frames" => {
                 options.frames = Some(args.next().context("--frames requires a count")?.parse()?)
             }
@@ -50,10 +55,10 @@ fn main() -> Result<()> {
             "--zones" | "--state" => {
                 zones = Some(args.next().context("--state requires a JSON path")?.into())
             }
-            "--listen" => {
+            "--legacy-listen" => {
                 options.listen = Some(
                     args.next()
-                        .context("--listen requires a socket path")?
+                        .context("--legacy-listen requires a socket path")?
                         .into(),
                 )
             }
@@ -85,7 +90,7 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner|scene] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
+                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner|scene] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nInteractive: --listen SOCKET [--channel NAME] (--ui-socket is an alias). Legacy snapshots: --legacy-listen SOCKET.\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
                 );
                 return Ok(());
             }
@@ -96,6 +101,23 @@ fn main() -> Result<()> {
         !options.owner_controls || (options.view == panel::View::Owner && snapshot.is_none()),
         "--owner-controls requires a native owner view"
     );
+    anyhow::ensure!(
+        options.channel_socket.is_none()
+            || (options.listen.is_none()
+                && snapshot.is_none()
+                && zones.is_none()
+                && !options.owner_controls
+                && !options.workspaces
+                && workspace_file.is_none()
+                && !show_scene
+                && !options.animate
+                && animation_snapshots.is_none()),
+        "--ui-socket requires a standalone native channel surface"
+    );
+    if options.channel_socket.is_some() {
+        options.width = if options.channel == "weft" { 920 } else { 420 };
+        options.height = if options.channel == "weft" { 900 } else { 250 };
+    }
     let workspace_mode = options.workspaces || workspace_file.is_some();
     anyhow::ensure!(
         !(options.workspaces && workspace_file.is_some()),
@@ -141,7 +163,7 @@ fn main() -> Result<()> {
     }
     let zones_mode = zones.is_some() || options.listen.is_some();
     anyhow::ensure!(
-        options.view == panel::View::Zones || zones_mode,
+        options.view == panel::View::Zones || zones_mode || options.channel_socket.is_some(),
         "--view requires --state or --listen"
     );
     anyhow::ensure!(
@@ -150,7 +172,7 @@ fn main() -> Result<()> {
     );
     anyhow::ensure!(
         !(options.listen.is_some() && snapshot.is_some()),
-        "--listen requires a native surface"
+        "--legacy-listen requires a native surface"
     );
     if let Some(path) = zones {
         let bytes =

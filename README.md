@@ -53,12 +53,52 @@ rendering to its explicit frame count and logs each actual interval. Animation
 snapshots sample the same spring at 60 Hz at 0, 0.15, 0.5 and 2 seconds; the GPU
 tests compare all four PNGs exactly.
 
+## Interactive Scheme widget
+
+Run the renderer and the dedicated UI process in separate terminals:
+
+```sh
+mkdir -p -m 700 "$XDG_RUNTIME_DIR/hearth"
+cargo run -- --ui-socket "$XDG_RUNTIME_DIR/hearth/ui.sock" --channel widget
+```
+
+```sh
+guile --no-auto-compile -L scheme scheme/widget.scm \
+  "$XDG_RUNTIME_DIR/hearth/ui.sock" --control "$XDG_RUNTIME_DIR/hearth/control.sock"
+```
+
+Click Increment or Toggle. Scheme owns their behavior; Rust owns hover/press
+transitions and the frame loop. The persistent connection carries keyed patches,
+acknowledgments, inspection, input and GPU submission receipts. `--listen` is an
+alias for `--ui-socket`; its default channel is `widget`.
+
+The optional control socket evaluates one expression in the dedicated widget
+process. For example, change the counter and publish its nodes:
+
+```sh
+guile --no-auto-compile -L scheme -c '
+(use-modules (ui))
+(let ((port (socket AF_UNIX SOCK_STREAM 0)))
+  (connect port AF_UNIX (cadr (command-line)))
+  (ui-write-json! port (list (cons "code"
+    "(begin (set! counter 10) (publish-widget!))")))
+  (write (ui-read-json (ui-reader port))) (newline)
+  (close-port port))' "$XDG_RUNTIME_DIR/hearth/control.sock"
+```
+
+The same entry point can redefine `on-activate` or wrap it with advice. This
+socket is private and separate from both Weft and the renderer's data protocol.
+The [protocol reference](docs/protocol.md) defines the wire contract;
+[validation results](docs/validation.md) record the native interaction and latency
+checks. The [ADR review](docs/adr-002-review.md) records the critique that motivated
+the protocol acceptance tests.
+
 ## Weft zones
 
 ```sh
 cargo run -- --zones fixtures/weft-zones.json --snapshot artifacts/zones.png
-mkdir -m 700 "$XDG_RUNTIME_DIR/hearth"
-cargo run -- --listen "$XDG_RUNTIME_DIR/hearth/ui.sock"
+mkdir -p -m 700 "$XDG_RUNTIME_DIR/hearth"
+cargo run -- --listen "$XDG_RUNTIME_DIR/hearth/ui.sock" --channel weft
 # In another terminal, outside the render process:
 guile -L scheme scheme/live.scm "$XDG_RUNTIME_DIR/hearth/ui.sock"
 ```
@@ -73,8 +113,22 @@ are never overwritten. See [the protocol](docs/protocol.md) for limits and bindi
 `cargo test --test zones_snapshot` compares `snapshots/w0-zones.png` exactly.
 Regenerate it explicitly with the fixture command above targeting that path,
 then inspect the PNG at 1×. The live producer needs Guile, guile-json and the
-installed Weft CLI. It reads data only; the panel does not approve effects or
-claim terminal leases.
+installed Weft CLI. It reads application data and installs temporary trusted watch/advice hooks,
+which it removes on shutdown. The panel does not approve effects or claim
+terminal leases.
+
+The producer waits for persisted-state inotify changes and consults trusted
+Weft watches/notices. This is a persistence adapter, not a native stream from
+the isolated broker. Socket replacement triggers a new baseline. To mirror a
+renderer channel back into Weft, run a separate best-effort subscriber:
+
+```sh
+guile -L scheme scheme/mirror.scm "$XDG_RUNTIME_DIR/hearth/ui.sock" widget
+```
+
+It stores the latest update as `hearth-mirror-widget`, including observation time
+and availability. Oversized updates become an unavailable summary; later bounded
+updates recover. A blocked Weft evaluator does not block the widget process.
 
 Animated inputs have magnitude at most 1e12. Spring frequency (Hz) and damping
 ratio must each lie in 1e-6..=1e6; tolerance is finite and positive. Scene updates
@@ -84,7 +138,7 @@ validate accumulated translations and extents before replacing the visible tree.
 
 ```sh
 cargo run -- --state fixtures/weft-activity.json --view activity --snapshot artifacts/activity.png
-cargo run -- --view activity --listen "$XDG_RUNTIME_DIR/hearth/ui.sock"
+cargo run -- --view activity --listen "$XDG_RUNTIME_DIR/hearth/ui.sock" --channel weft
 guile -L scheme scheme/live.scm "$XDG_RUNTIME_DIR/hearth/ui.sock" --activity
 ```
 
@@ -101,11 +155,16 @@ relevant failures without displaying raw Scheme records. Run exporter checks wit
 
 ```sh
 cargo run -- --state fixtures/weft-owner.json --view owner --snapshot artifacts/owner.png
-cargo run -- --view owner --listen "$XDG_RUNTIME_DIR/hearth/ui.sock" --owner-controls
-guile -L scheme scheme/live.scm "$XDG_RUNTIME_DIR/hearth/ui.sock" --activity
+cargo run -- --view owner --legacy-listen "$XDG_RUNTIME_DIR/hearth/owner.sock" --owner-controls
 ```
 
-Owner views default to read-only. `--owner-controls` enables explicit pointer
+Owner views default to read-only. The control example requires a v1 producer
+using `(hearth-send! socket snapshot)` from `scheme/hearth.scm`, with fresh
+`activity` from `(hearth-activity)` and increasing revisions. `scheme/live.scm`
+uses v2 and cannot feed this legacy socket. To inspect live proposals without
+controls, use `--view owner --listen SOCKET --channel weft` with `live.scm --activity`.
+
+`--owner-controls` enables explicit pointer
 press/release decisions through `weft owner`; render updates cannot issue commands.
 Proposals use escaped text so control characters remain visible. Approval is
 disabled when the complete proposal does not fit. Rejection remains available
@@ -156,13 +215,13 @@ are in [woodland assets](assets/woodland/README.md).
 ## Scheme scenes and reactive widgets
 
 ```sh
-cargo run -- --view scene --listen "$XDG_RUNTIME_DIR/hearth/ui.sock"
-guile -L scheme scheme/scene-demo.scm "$XDG_RUNTIME_DIR/hearth/ui.sock"
+cargo run -- --view scene --legacy-listen "$XDG_RUNTIME_DIR/hearth/scene.sock"
+guile -L scheme scheme/scene-demo.scm "$XDG_RUNTIME_DIR/hearth/scene.sock"
 cargo run -- --view scene --state fixtures/scheme-scene.json --snapshot artifacts/scheme-scene.png
 ```
 
-The `(scene)` module constructs retained scene data and sends it through the same
-private socket as workspace snapshots. `--view scene` uses a 640×400 demo surface.
+The `(scene)` module constructs retained scene data for the legacy v1 socket.
+The dedicated widget above uses the v2 keyed protocol. `--view scene` uses a 640×400 demo surface.
 The Rust `SceneBuilder` composes nodes; `BoundScene` connects signals to validated
 scenes. Signals coalesce, unchanged values stay clean, and disposing an owner
 releases its computations. A panicking computation is disposed before unwinding.

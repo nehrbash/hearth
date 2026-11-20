@@ -1,0 +1,978 @@
+{
+  "before": {
+    "channel": "widget",
+    "connected": true,
+    "data": {
+      "counter": 0,
+      "enabled": false
+    },
+    "epoch": 1795152592958337,
+    "nodes": [
+      {
+        "bounds": [
+          0,
+          0,
+          420,
+          250
+        ],
+        "color": [
+          0.008,
+          0.012,
+          0.02,
+          1
+        ],
+        "key": "background",
+        "kind": "rect",
+        "order": 0
+      },
+      {
+        "bounds": [
+          28,
+          20,
+          364,
+          30
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 19,
+        "key": "title",
+        "kind": "text",
+        "order": 1,
+        "text": "Scheme workspace widget"
+      },
+      {
+        "bounds": [
+          28,
+          64,
+          364,
+          38
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 26,
+        "key": "counter-value",
+        "kind": "text",
+        "order": 2,
+        "text": "Count: 0"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "increment",
+        "kind": "group",
+        "offset": [
+          28,
+          122
+        ],
+        "order": 3,
+        "states": {
+          "hover": {
+            "offset": [
+              28,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              28,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "increment-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "increment"
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "increment-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "increment",
+        "text": "Increment"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "toggle",
+        "kind": "group",
+        "offset": [
+          220,
+          122
+        ],
+        "order": 4,
+        "states": {
+          "hover": {
+            "offset": [
+              220,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              220,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "toggle-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "toggle",
+        "state": "off",
+        "states": {
+          "on": {
+            "color": [
+              0.08,
+              0.48,
+              0.31,
+              1
+            ]
+          }
+        },
+        "transitions": {
+          "color": 180
+        }
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "toggle-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "toggle",
+        "text": "Off"
+      },
+      {
+        "bounds": [
+          28,
+          201,
+          364,
+          24
+        ],
+        "color": [
+          0.5,
+          0.6,
+          0.72,
+          1
+        ],
+        "font_size": 13,
+        "key": "footer",
+        "kind": "text",
+        "order": 5,
+        "text": "Scheme behavior \u00b7 Rust transitions"
+      }
+    ],
+    "request_id": "proof",
+    "seq": 1,
+    "type": "inspect"
+  },
+  "clicked": {
+    "channel": "widget",
+    "connected": true,
+    "data": {
+      "counter": 1,
+      "enabled": false
+    },
+    "epoch": 1795152592958337,
+    "nodes": [
+      {
+        "bounds": [
+          0,
+          0,
+          420,
+          250
+        ],
+        "color": [
+          0.008,
+          0.012,
+          0.02,
+          1
+        ],
+        "key": "background",
+        "kind": "rect",
+        "order": 0
+      },
+      {
+        "bounds": [
+          28,
+          20,
+          364,
+          30
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 19,
+        "key": "title",
+        "kind": "text",
+        "order": 1,
+        "text": "Scheme workspace widget"
+      },
+      {
+        "bounds": [
+          28,
+          64,
+          364,
+          38
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 26,
+        "key": "counter-value",
+        "kind": "text",
+        "order": 2,
+        "text": "Count: 1"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "increment",
+        "kind": "group",
+        "offset": [
+          28,
+          122
+        ],
+        "order": 3,
+        "states": {
+          "hover": {
+            "offset": [
+              28,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              28,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "increment-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "increment"
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "increment-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "increment",
+        "text": "Increment"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "toggle",
+        "kind": "group",
+        "offset": [
+          220,
+          122
+        ],
+        "order": 4,
+        "states": {
+          "hover": {
+            "offset": [
+              220,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              220,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "toggle-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "toggle",
+        "state": "off",
+        "states": {
+          "on": {
+            "color": [
+              0.08,
+              0.48,
+              0.31,
+              1
+            ]
+          }
+        },
+        "transitions": {
+          "color": 180
+        }
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "toggle-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "toggle",
+        "text": "Off"
+      },
+      {
+        "bounds": [
+          28,
+          201,
+          364,
+          24
+        ],
+        "color": [
+          0.5,
+          0.6,
+          0.72,
+          1
+        ],
+        "font_size": 13,
+        "key": "footer",
+        "kind": "text",
+        "order": 5,
+        "text": "Scheme behavior \u00b7 Rust transitions"
+      }
+    ],
+    "request_id": "proof",
+    "seq": 2,
+    "type": "inspect"
+  },
+  "redefined": {
+    "channel": "widget",
+    "connected": true,
+    "data": {
+      "counter": 11,
+      "enabled": false
+    },
+    "epoch": 1795152592958337,
+    "nodes": [
+      {
+        "bounds": [
+          0,
+          0,
+          420,
+          250
+        ],
+        "color": [
+          0.008,
+          0.012,
+          0.02,
+          1
+        ],
+        "key": "background",
+        "kind": "rect",
+        "order": 0
+      },
+      {
+        "bounds": [
+          28,
+          20,
+          364,
+          30
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 19,
+        "key": "title",
+        "kind": "text",
+        "order": 1,
+        "text": "Scheme workspace widget"
+      },
+      {
+        "bounds": [
+          28,
+          64,
+          364,
+          38
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 26,
+        "key": "counter-value",
+        "kind": "text",
+        "order": 2,
+        "text": "Count: 11"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "increment",
+        "kind": "group",
+        "offset": [
+          28,
+          122
+        ],
+        "order": 3,
+        "states": {
+          "hover": {
+            "offset": [
+              28,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              28,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "increment-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "increment"
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "increment-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "increment",
+        "text": "Increment"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "toggle",
+        "kind": "group",
+        "offset": [
+          220,
+          122
+        ],
+        "order": 4,
+        "states": {
+          "hover": {
+            "offset": [
+              220,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              220,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "toggle-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "toggle",
+        "state": "off",
+        "states": {
+          "on": {
+            "color": [
+              0.08,
+              0.48,
+              0.31,
+              1
+            ]
+          }
+        },
+        "transitions": {
+          "color": 180
+        }
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "toggle-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "toggle",
+        "text": "Off"
+      },
+      {
+        "bounds": [
+          28,
+          201,
+          364,
+          24
+        ],
+        "color": [
+          0.5,
+          0.6,
+          0.72,
+          1
+        ],
+        "font_size": 13,
+        "key": "footer",
+        "kind": "text",
+        "order": 5,
+        "text": "Scheme behavior \u00b7 Rust transitions"
+      }
+    ],
+    "request_id": "proof",
+    "seq": 3,
+    "type": "inspect"
+  },
+  "toggled": {
+    "channel": "widget",
+    "connected": true,
+    "data": {
+      "counter": 11,
+      "enabled": true
+    },
+    "epoch": 1795152592958337,
+    "nodes": [
+      {
+        "bounds": [
+          0,
+          0,
+          420,
+          250
+        ],
+        "color": [
+          0.008,
+          0.012,
+          0.02,
+          1
+        ],
+        "key": "background",
+        "kind": "rect",
+        "order": 0
+      },
+      {
+        "bounds": [
+          28,
+          20,
+          364,
+          30
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 19,
+        "key": "title",
+        "kind": "text",
+        "order": 1,
+        "text": "Scheme workspace widget"
+      },
+      {
+        "bounds": [
+          28,
+          64,
+          364,
+          38
+        ],
+        "color": [
+          0.9,
+          0.93,
+          0.98,
+          1
+        ],
+        "font_size": 26,
+        "key": "counter-value",
+        "kind": "text",
+        "order": 2,
+        "text": "Count: 11"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "increment",
+        "kind": "group",
+        "offset": [
+          28,
+          122
+        ],
+        "order": 3,
+        "states": {
+          "hover": {
+            "offset": [
+              28,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              28,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "increment-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "increment"
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "increment-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "increment",
+        "text": "Increment"
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "input": true,
+        "key": "toggle",
+        "kind": "group",
+        "offset": [
+          220,
+          122
+        ],
+        "order": 4,
+        "states": {
+          "hover": {
+            "offset": [
+              220,
+              120
+            ]
+          },
+          "pressed": {
+            "offset": [
+              220,
+              124
+            ]
+          }
+        },
+        "transitions": {
+          "offset": 90
+        }
+      },
+      {
+        "bounds": [
+          0,
+          0,
+          170,
+          52
+        ],
+        "color": [
+          0.12,
+          0.17,
+          0.25,
+          1
+        ],
+        "key": "toggle-bg",
+        "kind": "rect",
+        "order": 0,
+        "parent": "toggle",
+        "state": "on",
+        "states": {
+          "on": {
+            "color": [
+              0.08,
+              0.48,
+              0.31,
+              1
+            ]
+          }
+        },
+        "transitions": {
+          "color": 180
+        }
+      },
+      {
+        "bounds": [
+          16,
+          12,
+          138,
+          28
+        ],
+        "color": [
+          0.95,
+          0.96,
+          0.99,
+          1
+        ],
+        "font_size": 20,
+        "key": "toggle-label",
+        "kind": "text",
+        "order": 1,
+        "parent": "toggle",
+        "text": "On"
+      },
+      {
+        "bounds": [
+          28,
+          201,
+          364,
+          24
+        ],
+        "color": [
+          0.5,
+          0.6,
+          0.72,
+          1
+        ],
+        "font_size": 13,
+        "key": "footer",
+        "kind": "text",
+        "order": 5,
+        "text": "Scheme behavior \u00b7 Rust transitions"
+      }
+    ],
+    "request_id": "proof",
+    "seq": 4,
+    "type": "inspect"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "channel": "mirror-proof-786dd279fa2e4f9595bce98f6222bb75",
+  "saved_name": "hearth-mirror-mirror-proof-786dd279fa2e4f9595bce98f6222bb75",
+  "initial": {
+    "seq": 1,
+    "connected": true
+  },
+  "oversize": {
+    "renderer_applied_seq": 2,
+    "saved_seq": 2,
+    "saved_connected": false,
+    "status": "unavailable",
+    "error": "Scene exceeds the 120 KiB mirror publication budget"
+  },
+  "small_recovery_seq": 3,
+  "renderer_exit": 0,
+  "after_renderer_exit": {
+    "seq": 3,
+    "connected": false,
+    "has_observed_timestamp": true
+  },
+  "mirror_exit": 0,
+  "after_mirror_exit": {
+    "seq": 3,
+    "connected": false
+  },
+  "normal_publication_passed": true,
+  "saved_removed": true,
+  "socket_removed": true
+}

@@ -1,0 +1,88 @@
+(define-module (mirror)
+  #:use-module (ui)
+  #:use-module (weft-watch)
+  #:use-module (ice-9 match)
+  #:use-module (rnrs bytevectors)
+  #:use-module (srfi srfi-1)
+  #:export (mirror-observe mirror-unavailable mirror-publish!))
+
+(define (replace-fields value fields)
+  (append fields (filter (lambda (pair)
+                          (not (any (lambda (field)
+                                      (equal? (symbol->string (car field))
+                                              (if (symbol? (car pair))
+                                                  (symbol->string (car pair)) (car pair)))) fields))) value)))
+
+(define (mirror-observe message timestamp)
+  (replace-fields message
+    `((observed_at_ms . ,timestamp)
+      (status . ,(if (ui-field message "connected") "available" "unavailable"))
+      (error . ,(if (ui-field message "connected") 'null "Channel producer disconnected")))))
+
+(define (mirror-unavailable value channel reason)
+  (replace-fields (or value `((channel . ,channel) (observed_at_ms . null)))
+                  `((connected . #f) (status . "unavailable") (error . ,reason))))
+
+(define (publication name value)
+  `(begin (saved-set! ',name ',value) #t))
+
+(define* (mirror-publish! name value #:key (command watch-command))
+  (let* ((expression (publication name value))
+         (oversize? (> (bytevector-length (string->utf8 (object->string expression))) 122880))
+         (bounded (if oversize?
+                      (mirror-unavailable
+                        (filter (lambda (pair)
+                                  (member (car pair) '("channel" "epoch" "seq" "observed_at_ms"
+                                                       channel epoch seq observed_at_ms))) value)
+                        (ui-field value "channel") "Scene exceeds the 120 KiB mirror publication budget")
+                      value)))
+    (command "workspace-eval" (publication name bounded))
+    bounded))
+
+(define (milliseconds)
+  (let ((now (gettimeofday))) (+ (* (car now) 1000) (quotient (cdr now) 1000))))
+
+(define (run path channel)
+  (let ((port #f) (reader #f) (stopping? #f) (last #f)
+        (name (string->symbol (string-append "hearth-mirror-" channel))))
+    (define (unavailable! reason)
+      (catch #t
+        (lambda () (set! last (mirror-publish! name (mirror-unavailable last channel reason))))
+        (lambda _ (display "Hearth mirror could not publish unavailable state\n" (current-error-port)))))
+    (sigaction SIGPIPE SIG_IGN)
+    (sigaction SIGTERM (lambda (_) (set! stopping? #t)))
+    (sigaction SIGINT (lambda (_) (set! stopping? #t)))
+    (dynamic-wind
+      (lambda () (unavailable! "Waiting for renderer channel state"))
+      (lambda ()
+        (let loop ()
+          (unless stopping?
+            (catch #t
+              (lambda ()
+                (unless port
+                  (set! port (socket AF_UNIX SOCK_STREAM 0))
+                  (connect port AF_UNIX path)
+                  (fcntl port F_SETFL (logior O_NONBLOCK (fcntl port F_GETFL)))
+                  (set! reader (ui-reader port))
+                  (ui-write-json! port '((type . "hello") (major . 2) (capabilities . #("subscribe"))))
+                  (let ((hello (ui-read-json reader)))
+                    (unless (and (equal? (ui-field hello "type") "hello") (= (ui-field hello "major") 2))
+                      (error "Unsupported renderer mirror protocol")))
+                  (ui-write-json! port `((type . "subscribe") (channel . ,channel))))
+                (let ((message (ui-read-json reader 1)))
+                  (when (and message (equal? (ui-field message "type") "channel_update")
+                             (equal? (ui-field message "channel") channel))
+                    (set! last (mirror-publish! name (mirror-observe message (milliseconds)))))))
+              (lambda (key . arguments)
+                (unless stopping? (format (current-error-port) "Hearth mirror unavailable (~a); resubscribing to latest state~%" key))
+                (unavailable! "Renderer connection unavailable")
+                (when port (close-port port))
+                (set! port #f) (set! reader #f)
+                (unless stopping? (select '() '() '() 1))))
+            (loop))))
+      (lambda () (when port (close-port port)) (unavailable! "Mirror stopped")))))
+
+(when (string-suffix? "scheme/mirror.scm" (car (command-line)))
+ (match (cdr (command-line))
+  ((path channel) (run path channel))
+  (_ (display "Usage: guile -L scheme scheme/mirror.scm SOCKET CHANNEL\n" (current-error-port)) (exit 2))))

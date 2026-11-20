@@ -1,0 +1,45 @@
+{
+  "zone": "hearth-push-proof-49b9e153f7cb4f5a9c76b6f04af89a5e",
+  "started_unix": 1795152634.8033915,
+  "adapter_pid": 20741,
+  "baseline": {
+    "epoch": 1795152635336627,
+    "seq": 1,
+    "session_id": "20739-1795152634885180970",
+    "zones": 7
+  },
+  "registered": {
+    "watches": 4,
+    "advice": 1,
+    "saved": 2,
+    "bindings": 2
+  },
+  "idle_updates_before": [],
+  "push": {
+    "epoch": 1795152635336627,
+    "seq": 2,
+    "mutation_command_ms": 72.70714900369057,
+    "after_command_ms": 273.52317499753553,
+    "total_ms": 346.2303240012261
+  },
+  "idle_updates_after": [],
+  "renderer_first_exit": 0,
+  "restart": {
+    "session_id": "22696-1795152640077634867",
+    "epoch": 1795152640884695,
+    "seq": 1,
+    "marker_restored": true
+  },
+  "removed_seq": 2,
+  "adapter_exit": 0,
+  "cleanup": {
+    "watches": 0,
+    "advice": 0,
+    "saved": 0,
+    "bindings": 0
+  },
+  "renderer_final_exit": 0,
+  "socket_removed": true,
+  "success": true,
+  "finished_unix": 1795152641.9852262
+}

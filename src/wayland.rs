@@ -54,6 +54,8 @@ use crate::{
 };
 
 pub struct SurfaceOptions {
+    pub channel_socket: Option<PathBuf>,
+    pub channel: String,
     pub workspaces: bool,
     pub workspace_snapshot: Option<WorkspaceSnapshot>,
     pub hyprland_instance: Option<String>,
@@ -71,6 +73,8 @@ pub struct SurfaceOptions {
 impl Default for SurfaceOptions {
     fn default() -> Self {
         Self {
+            channel_socket: None,
+            channel: "widget".into(),
             workspaces: false,
             workspace_snapshot: None,
             hyprland_instance: None,
@@ -143,6 +147,12 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         .as_ref()
         .map(SnapshotListener::bind)
         .transpose()?;
+    let channel_listener = options
+        .channel_socket
+        .as_ref()
+        .map(crate::channels::ChannelListener::bind)
+        .transpose()?;
+    let channel_mode = channel_listener.is_some();
     let mut snapshots = SnapshotStore::default();
     if let Some(snapshot) = options.snapshot {
         snapshots.apply(snapshot)?;
@@ -213,26 +223,31 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         Some(demo) => Some(demo.scene()?),
         None => options.scene,
     };
-    let bound_scene = if matches!(options.view, panel::View::Scene) && !workspace_mode {
-        let runtime = Runtime::new();
-        let initial = snapshots
-            .current()
-            .map(|snapshot| scene_data::build_nodes(snapshot.scene.as_deref().unwrap_or(&[])))
-            .transpose()?
-            .unwrap_or_default();
-        let nodes = runtime.signal(initial);
-        let input = nodes.clone();
-        let mut bound = BoundScene::new(&runtime, move |context| context.read(&input))?;
-        bound.flush()?;
-        Some((nodes, bound))
-    } else {
-        None
-    };
-    let renderer =
-        (scene.is_some() || bound_scene.is_some()).then(|| Renderer::new(&gpu, config.format));
-    let panel_renderer = ((zones_mode || workspace_mode) && bound_scene.is_none())
+    let bound_scene =
+        if matches!(options.view, panel::View::Scene) && !workspace_mode && !channel_mode {
+            let runtime = Runtime::new();
+            let initial = snapshots
+                .current()
+                .map(|snapshot| scene_data::build_nodes(snapshot.scene.as_deref().unwrap_or(&[])))
+                .transpose()?
+                .unwrap_or_default();
+            let nodes = runtime.signal(initial);
+            let input = nodes.clone();
+            let mut bound = BoundScene::new(&runtime, move |context| context.read(&input))?;
+            bound.flush()?;
+            Some((nodes, bound))
+        } else {
+            None
+        };
+    let renderer = (scene.is_some() || bound_scene.is_some() || channel_mode)
+        .then(|| Renderer::new(&gpu, config.format));
+    let panel_renderer = ((zones_mode || workspace_mode || channel_mode) && bound_scene.is_none())
         .then(|| PanelRenderer::new(&gpu, config.format));
     let mut app = App {
+        channel_listener,
+        selected_channel: options.channel,
+        channel_state: None,
+        interactive: channel_mode.then(crate::interactive::InteractiveScene::new),
         workspace_mode,
         workspace_feed,
         workspace_snapshot: options.workspace_snapshot,
@@ -272,6 +287,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         events.dispatch_pending(&mut app)?;
         app.apply_workspace_updates(&qh)?;
         app.apply_updates(&qh)?;
+        app.apply_channels(&qh)?;
         app.apply_completions(&qh)?;
         if app.exit {
             break;
@@ -321,6 +337,14 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            libc::pollfd {
+                fd: app
+                    .channel_listener
+                    .as_ref()
+                    .map_or(-1, crate::channels::ChannelListener::update_fd),
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         // The prepared Wayland read and listener own these descriptors through poll.
         let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
@@ -356,6 +380,10 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
 }
 
 struct App {
+    channel_listener: Option<crate::channels::ChannelListener>,
+    selected_channel: String,
+    channel_state: Option<std::sync::Arc<crate::channels::ChannelSnapshot>>,
+    interactive: Option<crate::interactive::InteractiveScene>,
     workspace_mode: bool,
     workspace_feed: Option<WorkspaceFeed>,
     workspace_snapshot: Option<WorkspaceSnapshot>,
@@ -393,7 +421,128 @@ struct App {
 }
 
 impl App {
+    fn advance_interactive(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if let Some(interactive) = &mut self.interactive {
+            let delta = self
+                .last_frame
+                .map_or(0.0, |old| now.duration_since(old).as_secs_f64());
+            interactive.advance(Seconds::new(delta)?);
+        }
+        self.last_frame = Some(now);
+        Ok(())
+    }
+
+    fn apply_channels(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        let Some(listener) = &self.channel_listener else {
+            return Ok(());
+        };
+        listener.drain_notifications()?;
+        if let Some(error) = listener.take_error() {
+            eprintln!("channel rejected: {error}");
+        }
+        let Some(all) = listener.take_latest() else {
+            return Ok(());
+        };
+        let Some(state) = all.channels.get(&self.selected_channel).cloned() else {
+            return Ok(());
+        };
+        if self.channel_state.as_ref().is_some_and(|old| {
+            old.epoch == state.epoch && old.seq == state.seq && old.connected == state.connected
+        }) {
+            return Ok(());
+        }
+        self.advance_interactive()?;
+        if let Some(interactive) = &mut self.interactive {
+            if !state.connected
+                || self
+                    .channel_state
+                    .as_ref()
+                    .is_some_and(|old| old.epoch != state.epoch)
+            {
+                interactive.pointer(crate::interactive::PointerKind::Leave, 0.0, 0.0);
+            }
+            interactive.apply(&state.nodes)?;
+        }
+        self.panel = None;
+        if state.nodes.is_empty()
+            && let Some(data) = &state.data
+        {
+            match serde_json::from_value::<Snapshot>(data.clone()) {
+                Ok(snapshot) => {
+                    match panel::build(&snapshot, self.config.width, self.config.height, self.view)
+                    {
+                        Ok(panel) => self.panel = Some(panel),
+                        Err(error) => eprintln!("channel panel rejected: {error}"),
+                    }
+                }
+                Err(error) => eprintln!("channel data is not a workspace panel: {error}"),
+            }
+        }
+        self.channel_state = Some(state);
+        if self.configured {
+            self.draw(qh);
+        }
+        Ok(())
+    }
+
+    fn interactive_pointer(
+        &mut self,
+        kind: crate::interactive::PointerKind,
+        position: (f64, f64),
+        qh: &QueueHandle<Self>,
+    ) -> Result<()> {
+        if !self
+            .channel_state
+            .as_ref()
+            .is_some_and(|state| state.connected)
+        {
+            return Ok(());
+        }
+        self.advance_interactive()?;
+        let Some(interactive) = &mut self.interactive else {
+            return Ok(());
+        };
+        let inputs = interactive.pointer(kind, position.0 as f32, position.1 as f32);
+        if let (Some(listener), Some(state)) = (&self.channel_listener, &self.channel_state) {
+            for input in inputs {
+                if !listener.send_input(
+                    &state.channel,
+                    state.epoch,
+                    state.seq,
+                    &input.key,
+                    &input.event,
+                    position.0,
+                    position.1,
+                ) {
+                    eprintln!("input delivery unavailable for {}", input.key);
+                }
+            }
+        }
+        if (interactive.take_damage() || interactive.is_active()) && self.configured {
+            self.draw(qh);
+        }
+        Ok(())
+    }
+
     fn rebuild_panel(&mut self) -> Result<()> {
+        if self.channel_listener.is_some() {
+            self.panel = None;
+            if let Some(state) = &self.channel_state
+                && state.nodes.is_empty()
+                && let Some(data) = &state.data
+            {
+                match serde_json::from_value::<Snapshot>(data.clone())
+                    .map_err(anyhow::Error::from)
+                    .and_then(|snapshot| {
+                        panel::build(&snapshot, self.config.width, self.config.height, self.view)
+                    }) {
+                    Ok(panel) => self.panel = Some(panel),
+                    Err(error) => eprintln!("channel panel rejected: {error}"),
+                }
+            }
+            return Ok(());
+        }
         if self.workspace_mode {
             self.panel = Some(self.build_workspace_panel()?);
             return Ok(());
@@ -648,6 +797,10 @@ impl App {
             .last_frame
             .map_or(0.0, |previous| now.duration_since(previous).as_secs_f64());
         self.last_frame = Some(now);
+        if let Some(interactive) = &mut self.interactive {
+            interactive.advance(Seconds::new(delta)?);
+            self.scene = Some(interactive.scene()?);
+        }
         if let Some(animation) = &mut self.animation
             && animation.advance(Seconds::new(delta)?)
         {
@@ -697,12 +850,21 @@ impl App {
             "presented_frame={} interval_ms={:.3} animation_active={} x={:.3}",
             self.frames,
             delta * 1000.0,
-            self.animation.as_ref().is_some_and(Demo::active),
+            self.animation.as_ref().is_some_and(Demo::active)
+                || self
+                    .interactive
+                    .as_ref()
+                    .is_some_and(crate::interactive::InteractiveScene::is_active),
             self.animation.as_ref().map_or(0.0, Demo::position)
         );
         if self.limit.is_some_and(|limit| self.frames >= limit) {
             self.exit = true;
-        } else if (self.limit.is_some() || self.animation.as_ref().is_some_and(Demo::active))
+        } else if (self.limit.is_some()
+            || self.animation.as_ref().is_some_and(Demo::active)
+            || self
+                .interactive
+                .as_ref()
+                .is_some_and(crate::interactive::InteractiveScene::is_active))
             && !self.frame_pending
         {
             self.frame_pending = true;
@@ -711,6 +873,9 @@ impl App {
                 .frame(qh, self.layer.wl_surface().clone());
         }
         frame.present();
+        if let (Some(listener), Some(state)) = (&self.channel_listener, &self.channel_state) {
+            listener.mark_presented_snapshot(state, now.elapsed().as_secs_f64() * 1000.0);
+        }
         Ok(())
     }
 }
@@ -848,7 +1013,10 @@ impl SeatHandler for App {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if self.owner_controls && capability == Capability::Pointer && self.pointer.is_none() {
+        if (self.owner_controls || self.interactive.is_some())
+            && capability == Capability::Pointer
+            && self.pointer.is_none()
+        {
             match self.seats.get_pointer(qh, &seat) {
                 Ok(pointer) => self.pointer = Some((seat, pointer)),
                 Err(error) => eprintln!("Cannot create owner pointer: {error}"),
@@ -858,20 +1026,20 @@ impl SeatHandler for App {
     fn remove_capability(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
         if capability == Capability::Pointer {
-            self.remove_pointer(&seat);
+            self.remove_pointer(&seat, qh);
         }
     }
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
-        self.remove_pointer(&seat);
+    fn remove_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.remove_pointer(&seat, qh);
     }
 }
 impl App {
-    fn remove_pointer(&mut self, seat: &wl_seat::WlSeat) {
+    fn remove_pointer(&mut self, seat: &wl_seat::WlSeat, qh: &QueueHandle<Self>) {
         if self
             .pointer
             .as_ref()
@@ -881,6 +1049,11 @@ impl App {
                 pointer.release();
             }
             self.pressed = None;
+            if let Err(error) =
+                self.interactive_pointer(crate::interactive::PointerKind::Leave, (0.0, 0.0), qh)
+            {
+                eprintln!("pointer cancellation failed: {error}");
+            }
         }
     }
 }
@@ -894,6 +1067,27 @@ impl PointerHandler for App {
     ) {
         for event in events {
             if &event.surface != self.layer.wl_surface() {
+                continue;
+            }
+            if self.interactive.is_some() {
+                let kind = match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        Some(crate::interactive::PointerKind::Move)
+                    }
+                    PointerEventKind::Press { button: 0x110, .. } => {
+                        Some(crate::interactive::PointerKind::Press)
+                    }
+                    PointerEventKind::Release { button: 0x110, .. } => {
+                        Some(crate::interactive::PointerKind::Release)
+                    }
+                    PointerEventKind::Leave { .. } => Some(crate::interactive::PointerKind::Leave),
+                    _ => None,
+                };
+                if let Some(kind) = kind
+                    && let Err(error) = self.interactive_pointer(kind, event.position, qh)
+                {
+                    eprintln!("interactive input failed: {error}");
+                }
                 continue;
             }
             match event.kind {
