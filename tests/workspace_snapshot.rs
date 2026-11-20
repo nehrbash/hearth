@@ -22,8 +22,8 @@ fn workspace_bar_snapshot_preserves_named_and_special_slots() -> Result<()> {
         std::fs::create_dir_all("artifacts")?;
         render::write_png(
             Path::new("artifacts/m5-workspaces-actual.png"),
-            120,
-            1000,
+            60,
+            1440,
             &pixels,
         )?;
     }
