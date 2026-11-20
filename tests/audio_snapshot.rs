@@ -10,6 +10,8 @@ fn audio_outputs_inputs_and_unavailable_match_snapshots() -> Result<()> {
         "audio-inputs",
         "audio-applications",
         "audio-unavailable",
+        "audio-bluetooth",
+        "audio-bluetooth-pending",
     ] {
         let output = std::process::Command::new("guile")
             .args([

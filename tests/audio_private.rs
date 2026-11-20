@@ -347,3 +347,107 @@ fn unread_results_do_not_block_shutdown() -> Result<()> {
     worker.stop()?;
     Ok(())
 }
+
+#[test]
+fn delayed_bluetooth_sink_uses_explicit_metadata_and_address_guard() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut worker = fixture.worker(&[])?;
+    let initial = worker.snapshot()?;
+    assert!(
+        initial["nodes"]
+            .as_array()
+            .context("nodes")?
+            .iter()
+            .all(|n| n["bluetooth_address"].is_null())
+    );
+    let create = |address: &str| -> Result<Process> {
+        let mut command = Command::new("pw-cli");
+        fixture.environment(&mut command);
+        let args = format!(
+            "{{ factory.name = support.null-audio-sink node.name = hearth.test.bluetooth media.class = Audio/Sink audio.position = [ FL FR ] object.linger = true api.bluez5.address = \"{address}\" }}"
+        );
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        writeln!(
+            child.stdin.as_mut().context("pw-cli stdin")?,
+            "create-node adapter {args}"
+        )?;
+        Ok(Process(child))
+    };
+    let first_creator = create("ab:cd:ef:01:23:45")?;
+    let state = worker.receive(|v| {
+        v["state"]["nodes"].as_array().is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|n| n["name"] == "hearth.test.bluetooth" && n["ready"] == true)
+        })
+    })?["state"]
+        .clone();
+    let node = state["nodes"]
+        .as_array()
+        .context("nodes")?
+        .iter()
+        .find(|n| n["name"] == "hearth.test.bluetooth")
+        .context("Bluetooth sink")?
+        .clone();
+    assert_eq!(node["bluetooth_address"], "AB:CD:EF:01:23:45");
+    let mut request = json!({"type":"action","request_id":"wrong-address","request":{"session":state["session"],"id":node["id"],"serial":node["serial"],"expected_bluetooth_address":"AB:CD:EF:01:23:46","action":{"action":"default"}}});
+    serde_json::to_writer(&mut worker.input, &request)?;
+    worker.input.write_all(b"\n")?;
+    assert_eq!(
+        worker.receive(|v| v["request_id"] == "wrong-address")?["status"],
+        "rejected"
+    );
+    request["request_id"] = json!("right-address");
+    request["request"]["expected_bluetooth_address"] = json!("AB:CD:EF:01:23:45");
+    serde_json::to_writer(&mut worker.input, &request)?;
+    worker.input.write_all(b"\n")?;
+    assert_eq!(
+        worker.receive(|v| v["request_id"] == "right-address")?["status"],
+        "applied"
+    );
+    let mut command = Command::new("pw-cli");
+    fixture.environment(&mut command);
+    ensure!(
+        command
+            .args(["destroy", &node["id"].to_string()])
+            .output()?
+            .status
+            .success(),
+        "Destroy private sink"
+    );
+    worker.receive(|v| {
+        v["state"]["nodes"]
+            .as_array()
+            .is_some_and(|nodes| !nodes.iter().any(|n| n["name"] == "hearth.test.bluetooth"))
+    })?;
+    drop(first_creator);
+    let _second_creator = create("AB:CD:EF:01:23:46")?;
+    let next = worker.receive(|v| {
+        v["state"]["nodes"].as_array().is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|n| n["name"] == "hearth.test.bluetooth" && n["ready"] == true)
+        })
+    })?;
+    let next = next["state"]["nodes"]
+        .as_array()
+        .context("nodes")?
+        .iter()
+        .find(|n| n["name"] == "hearth.test.bluetooth")
+        .context("replacement")?;
+    assert_ne!(next["serial"], node["serial"]);
+    assert_eq!(next["bluetooth_address"], "AB:CD:EF:01:23:46");
+    request["request_id"] = json!("replaced-sink");
+    serde_json::to_writer(&mut worker.input, &request)?;
+    worker.input.write_all(b"\n")?;
+    assert_eq!(
+        worker.receive(|v| v["request_id"] == "replaced-sink")?["status"],
+        "rejected"
+    );
+    worker.stop()?;
+    Ok(())
+}

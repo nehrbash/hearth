@@ -44,6 +44,7 @@ fn actions_require_current_ready_capable_identity() {
     use hearth::audio::{Action, ActionRequest, Kind};
     let base = snapshot();
     let mut request = ActionRequest {
+        expected_bluetooth_address: None,
         session: "test".into(),
         id: 1,
         serial: 2,
@@ -93,4 +94,35 @@ fn malformed_inventory_rejects_before_publication() {
     state = base;
     state.nodes[0].serial = None;
     assert!(state.validate().is_err());
+}
+
+#[test]
+fn bluetooth_metadata_is_explicit_canonical_and_guarded() {
+    use hearth::audio::{Action, ActionRequest, bluetooth_address};
+    assert_eq!(
+        bluetooth_address("ab:cd:ef:01:23:45").as_deref(),
+        Some("AB:CD:EF:01:23:45")
+    );
+    for value in [
+        "bluez_output.AB_CD_EF_01_23_45",
+        "AB-CD-EF-01-23-45",
+        "AB:CD:EF:01:23:4G",
+        "",
+    ] {
+        assert!(bluetooth_address(value).is_none());
+    }
+    let mut s = snapshot();
+    s.nodes[0].bluetooth_address = Some("AB:CD:EF:01:23:45".into());
+    let mut r = ActionRequest {
+        session: s.session.clone(),
+        id: 1,
+        serial: 2,
+        action: Action::Default,
+        expected_bluetooth_address: Some("AB:CD:EF:01:23:45".into()),
+    };
+    assert!(s.target(&r).is_ok());
+    r.expected_bluetooth_address = Some("AB:CD:EF:01:23:46".into());
+    assert!(s.target(&r).is_err());
+    s.nodes[0].bluetooth_address = None;
+    assert!(s.target(&r).is_err());
 }

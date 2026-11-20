@@ -224,6 +224,8 @@ struct NodeEntry {
     _listener: pw::node::NodeListener,
     proxy: Rc<pw::node::Node>,
     dto: Node,
+    device_identity: Option<(u32, Option<u64>)>,
+    address_present: bool,
     profile: Option<i32>,
     writable: bool,
     props_write: bool,
@@ -292,6 +294,13 @@ impl State {
             .values()
             .map(|entry| {
                 let mut n = entry.dto.clone();
+                if !entry.address_present {
+                    let device = entry
+                        .device_identity
+                        .and_then(|(id, _)| self.devices.get(&id))
+                        .map(|d| &d.dto);
+                    n.bluetooth_address = associated_address(entry.device_identity, device);
+                }
                 let (p, writable, _) = self.effective(entry);
                 n.channels = p.channels.clone();
                 n.channel_volumes_linear = p.volumes.clone();
@@ -796,35 +805,46 @@ fn bind_global(
             let listener = proxy
                 .add_listener_local()
                 .info(move |info| {
-                    if let Some(s) = weak.upgrade()
-                        && let Some(n) = s.borrow_mut().nodes.get_mut(&id)
-                    {
-                        if info.change_mask().contains(pw::node::NodeChangeMask::STATE) {
-                            n.dto.state = match info.state() {
-                                pw::node::NodeState::Creating => "creating",
-                                pw::node::NodeState::Suspended => "suspended",
-                                pw::node::NodeState::Idle => "idle",
-                                pw::node::NodeState::Running => "running",
-                                pw::node::NodeState::Error(_) => "error",
+                    if let Some(s) = weak.upgrade() {
+                        let mut state = s.borrow_mut();
+                        let device = info.props().and_then(|p| number::<u32>(p, "device.id"));
+                        let binding = device
+                            .and_then(|id| state.devices.get(&id).map(|d| (id, d.dto.serial)));
+                        if let Some(n) = state.nodes.get_mut(&id) {
+                            if info.change_mask().contains(pw::node::NodeChangeMask::STATE) {
+                                n.dto.state = match info.state() {
+                                    pw::node::NodeState::Creating => "creating",
+                                    pw::node::NodeState::Suspended => "suspended",
+                                    pw::node::NodeState::Idle => "idle",
+                                    pw::node::NodeState::Running => "running",
+                                    pw::node::NodeState::Error(_) => "error",
+                                }
+                                .into();
                             }
-                            .into();
-                        }
-                        if info.change_mask().contains(pw::node::NodeChangeMask::PROPS)
-                            && let Some(p) = info.props()
-                        {
-                            n.profile = number(p, "card.profile.device");
-                            n.dto.device_id = number(p, "device.id").or(n.dto.device_id);
-                            n.dto.application_name = text(p, "application.name")
-                                .or_else(|| n.dto.application_name.clone());
-                        }
-                        if info
-                            .change_mask()
-                            .contains(pw::node::NodeChangeMask::PARAMS)
-                        {
-                            n.props_write = info.params().iter().any(|p| {
-                                p.id() == ParamType::Props
-                                    && p.flags().contains(ParamInfoFlags::WRITE)
-                            });
+                            if info.change_mask().contains(pw::node::NodeChangeMask::PROPS)
+                                && let Some(p) = info.props()
+                            {
+                                n.profile = number(p, "card.profile.device");
+                                if n.dto.device_id != device {
+                                    n.device_identity = binding;
+                                }
+                                n.dto.device_id = device;
+                                n.address_present = p.get("api.bluez5.address").is_some();
+                                n.dto.bluetooth_address = p
+                                    .get("api.bluez5.address")
+                                    .and_then(audio::bluetooth_address);
+                                n.dto.application_name = text(p, "application.name")
+                                    .or_else(|| n.dto.application_name.clone());
+                            }
+                            if info
+                                .change_mask()
+                                .contains(pw::node::NodeChangeMask::PARAMS)
+                            {
+                                n.props_write = info.params().iter().any(|p| {
+                                    p.id() == ParamType::Props
+                                        && p.flags().contains(ParamInfoFlags::WRITE)
+                                });
+                            }
                         }
                     }
                 })
@@ -846,6 +866,8 @@ fn bind_global(
                     }
                 })
                 .register();
+            let device_identity = number::<u32>(p, "device.id")
+                .and_then(|id| state.borrow().devices.get(&id).map(|d| (id, d.dto.serial)));
             state.borrow_mut().nodes.insert(
                 id,
                 NodeEntry {
@@ -855,6 +877,9 @@ fn bind_global(
                         id,
                         serial: number(p, "object.serial"),
                         device_id: number(p, "device.id"),
+                        bluetooth_address: p
+                            .get("api.bluez5.address")
+                            .and_then(audio::bluetooth_address),
                         kind,
                         name: text(p, "node.name").unwrap_or_default(),
                         description: text(p, "node.description"),
@@ -866,6 +891,8 @@ fn bind_global(
                         mute: None,
                         capabilities: Capabilities::default(),
                     },
+                    device_identity,
+                    address_present: p.get("api.bluez5.address").is_some(),
                     profile: number(p, "card.profile.device"),
                     writable,
                     props_write: false,
@@ -894,6 +921,9 @@ fn bind_global(
                                 && let Some(p) = info.props()
                             {
                                 d.pro = p.get("device.profile.pro") == Some("true");
+                                d.dto.bluetooth_address = p
+                                    .get("api.bluez5.address")
+                                    .and_then(audio::bluetooth_address);
                             }
                             if info
                                 .change_mask()
@@ -952,6 +982,9 @@ fn bind_global(
                         name: text(p, "device.name").unwrap_or_default(),
                         description: text(p, "device.description"),
                         api: text(p, "device.api"),
+                        bluetooth_address: p
+                            .get("api.bluez5.address")
+                            .and_then(audio::bluetooth_address),
                     },
                     pro: p.get("device.profile.pro") == Some("true"),
                     writable,
@@ -960,6 +993,12 @@ fn bind_global(
                     refresh: None,
                 },
             );
+            let serial = number(p, "object.serial");
+            for node in state.borrow_mut().nodes.values_mut() {
+                if node.dto.device_id == Some(id) && node.device_identity.is_none() {
+                    node.device_identity = Some((id, serial));
+                }
+            }
         }
         ObjectType::Metadata if p.get("metadata.name") == Some("default") => {
             let proxy = Rc::new(registry.bind::<pw::metadata::Metadata, _>(global)?);
@@ -1003,4 +1042,40 @@ fn bind_global(
         _ => {}
     }
     Ok(())
+}
+
+fn associated_address(
+    binding: Option<(u32, Option<u64>)>,
+    device: Option<&Device>,
+) -> Option<String> {
+    let (id, Some(serial)) = binding? else {
+        return None;
+    };
+    device
+        .filter(|d| d.id == id && d.serial == Some(serial))
+        .and_then(|d| d.bluetooth_address.clone())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bluetooth_device_fallback_rejects_reused_ids_and_missing_serials() {
+        let mut device = Device {
+            id: 5,
+            serial: Some(10),
+            name: "device".into(),
+            description: None,
+            api: Some("bluez5".into()),
+            bluetooth_address: Some("AB:CD:EF:01:23:45".into()),
+        };
+        assert_eq!(
+            associated_address(Some((5, Some(10))), Some(&device)),
+            device.bluetooth_address
+        );
+        device.serial = Some(11);
+        assert!(associated_address(Some((5, Some(10))), Some(&device)).is_none());
+        assert!(associated_address(Some((5, None)), Some(&device)).is_none());
+        assert!(associated_address(Some((6, Some(11))), Some(&device)).is_none());
+        assert!(associated_address(Some((5, Some(11))), None).is_none());
+    }
 }

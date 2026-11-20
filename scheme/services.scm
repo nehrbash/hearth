@@ -273,6 +273,12 @@
 (define (audio-text? value)
   (and (bounded-text? value 4096) (not (string-index value #\nul))))
 
+(define (bluetooth-address? value)
+  (and (string? value) (= (string-length value) 17)
+       (every (lambda (index) (let ((character (string-ref value index)))
+                (if (= (modulo index 3) 2) (char=? character #\:)
+                    (and (string-index "0123456789ABCDEF" character) #t)))) (iota 17))))
+
 (define (validate-pipewire state)
   (require (object-keys? state '("session" "core_cookie" "devices" "nodes" "defaults")) "Unexpected PipeWire state fields")
   (require (and (identifier? (assoc-ref state "session") 128) (u32? (assoc-ref state "core_cookie")))
@@ -286,7 +292,9 @@
                 (require (optional? (lambda (value) (audio-text? value)) (cdr pair)) "Invalid PipeWire default name")) defaults)
     (for-each
       (lambda (device)
-        (require (object-keys? device '("id" "serial" "name" "description" "api")) "Unexpected PipeWire device fields")
+        (require (object-keys? (alist-delete "bluetooth_address" device equal?) '("id" "serial" "name" "description" "api")) "Unexpected PipeWire device fields")
+        (require (<= (count (lambda (pair) (equal? (car pair) "bluetooth_address")) device) 1) "Duplicate Bluetooth address")
+        (require (optional? bluetooth-address? (if (assoc "bluetooth_address" device) (assoc-ref device "bluetooth_address") 'null)) "Invalid PipeWire Bluetooth address")
         (require (and (u32? (assoc-ref device "id"))
                       (optional? (lambda (value) (integer-range? value 0 18446744073709551615)) (assoc-ref device "serial"))
                       (audio-text? (assoc-ref device "name"))) "Invalid PipeWire device identity")
@@ -294,9 +302,11 @@
                                          "Invalid PipeWire device text")) '("description" "api"))) (vector->list devices))
     (for-each
       (lambda (node)
-        (require (object-keys? node '("id" "serial" "device_id" "kind" "name" "description" "application_name"
+        (require (object-keys? (alist-delete "bluetooth_address" node equal?) '("id" "serial" "device_id" "kind" "name" "description" "application_name"
                                       "state" "ready" "channels" "channel_volumes_linear" "mute" "capabilities"))
                  "Unexpected PipeWire node fields")
+        (require (<= (count (lambda (pair) (equal? (car pair) "bluetooth_address")) node) 1) "Duplicate Bluetooth address")
+        (require (optional? bluetooth-address? (if (assoc "bluetooth_address" node) (assoc-ref node "bluetooth_address") 'null)) "Invalid PipeWire Bluetooth address")
         (require (and (u32? (assoc-ref node "id"))
                       (optional? (lambda (value) (integer-range? value 0 18446744073709551615)) (assoc-ref node "serial"))
                       (optional? u32? (assoc-ref node "device_id"))

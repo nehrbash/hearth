@@ -15,6 +15,8 @@ pub struct Device {
     pub name: String,
     pub description: Option<String>,
     pub api: Option<String>,
+    #[serde(default)]
+    pub bluetooth_address: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +31,8 @@ pub struct Node {
     pub id: u32,
     pub serial: Option<u64>,
     pub device_id: Option<u32>,
+    #[serde(default)]
+    pub bluetooth_address: Option<String>,
     pub kind: Kind,
     pub name: String,
     pub description: Option<String>,
@@ -60,6 +64,8 @@ pub struct ActionRequest {
     pub id: u32,
     pub serial: u64,
     pub action: Action,
+    #[serde(default)]
+    pub expected_bluetooth_address: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -87,6 +93,12 @@ impl AudioSnapshot {
         let mut ids = std::collections::HashSet::new();
         let valid = |s: &str| s.len() <= 4096 && !s.contains('\0');
         for d in &self.devices {
+            ensure!(
+                d.bluetooth_address
+                    .as_deref()
+                    .is_none_or(valid_bluetooth_address),
+                "Invalid Bluetooth address"
+            );
             ensure!(ids.insert(d.id), "Duplicate PipeWire object ID");
             ensure!(
                 valid(&d.name)
@@ -96,6 +108,12 @@ impl AudioSnapshot {
             );
         }
         for n in &self.nodes {
+            ensure!(
+                n.bluetooth_address
+                    .as_deref()
+                    .is_none_or(valid_bluetooth_address),
+                "Invalid Bluetooth address"
+            );
             ensure!(ids.insert(n.id), "Duplicate PipeWire object ID");
             ensure!(
                 ["creating", "suspended", "idle", "running", "error"].contains(&n.state.as_str()),
@@ -154,6 +172,13 @@ impl AudioSnapshot {
             .iter()
             .find(|n| n.id == request.id && n.serial == Some(request.serial))
             .context("PipeWire node identity changed")?;
+        if let Some(expected) = &request.expected_bluetooth_address {
+            ensure!(
+                valid_bluetooth_address(expected)
+                    && node.bluetooth_address.as_ref() == Some(expected),
+                "Bluetooth audio association changed"
+            );
+        }
         ensure!(node.ready, "PipeWire node is not ready");
         match request.action {
             Action::Volume { value, unmute } => {
@@ -205,4 +230,22 @@ pub fn scaled_volumes(current: &[f32], target: f32) -> Result<Vec<f32>> {
         .collect();
     validate_volumes(&result)?;
     Ok(result)
+}
+
+pub fn bluetooth_address(value: &str) -> Option<String> {
+    if value.len() != 17
+        || !value.bytes().enumerate().all(|(i, b)| {
+            if i % 3 == 2 {
+                b == b':'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+    {
+        return None;
+    }
+    Some(value.to_ascii_uppercase())
+}
+fn valid_bluetooth_address(value: &str) -> bool {
+    bluetooth_address(value).as_deref() == Some(value)
 }
