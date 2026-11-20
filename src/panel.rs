@@ -10,7 +10,21 @@ pub struct Panel {
     pub labels: Vec<Label>,
 }
 
-fn color(rgb: [u8; 3]) -> [f32; 4] {
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum View {
+    #[default]
+    Zones,
+    Activity,
+}
+
+pub fn build(snapshot: &Snapshot, width: u32, height: u32, view: View) -> Result<Panel> {
+    match view {
+        View::Zones => zones(snapshot, width, height),
+        View::Activity => crate::activity_panel::build(snapshot, width, height),
+    }
+}
+
+pub(crate) fn color(rgb: [u8; 3]) -> [f32; 4] {
     let linear = |v: u8| {
         let v = f32::from(v) / 255.0;
         if v <= 0.04045 {

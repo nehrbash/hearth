@@ -1,3 +1,5 @@
+pub mod activity;
+pub mod activity_panel;
 pub mod animation;
 pub mod animation_demo;
 pub mod gpu;

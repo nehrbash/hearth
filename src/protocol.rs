@@ -27,6 +27,8 @@ pub struct Snapshot {
     pub generation: String,
     pub revision: u64,
     pub zones: Vec<Zone>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<crate::activity::Activity>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -71,6 +73,11 @@ impl Snapshot {
     }
 
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        if let Some(activity) = &self.activity {
+            activity
+                .validate()
+                .map_err(|error| ProtocolError(error.to_string()))?;
+        }
         if self.version != 1 || self.kind != "snapshot" {
             return Err(ProtocolError("unsupported snapshot version or kind".into()));
         }

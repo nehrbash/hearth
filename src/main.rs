@@ -30,7 +30,20 @@ fn main() -> Result<()> {
                 )
             }
             "--scene" => show_scene = true,
-            "--zones" => zones = Some(args.next().context("--zones requires a JSON path")?.into()),
+            "--view" => {
+                options.view = match args
+                    .next()
+                    .context("--view requires zones or activity")?
+                    .as_str()
+                {
+                    "zones" => panel::View::Zones,
+                    "activity" => panel::View::Activity,
+                    other => bail!("Unknown view: {other}"),
+                };
+            }
+            "--zones" | "--state" => {
+                zones = Some(args.next().context("--state requires a JSON path")?.into())
+            }
             "--listen" => {
                 options.listen = Some(
                     args.next()
@@ -48,7 +61,7 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate | --zones FILE] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless scene PNG. COUNT enables a finite render benchmark."
+                    "hearth [--scene | --animate | --state FILE] [--view zones|activity] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
                 );
                 return Ok(());
             }
@@ -71,7 +84,11 @@ fn main() -> Result<()> {
     }
     if zones_mode {
         options.width = 920;
-        options.height = 680;
+        options.height = if options.view == panel::View::Activity {
+            900
+        } else {
+            680
+        };
     }
     if let Some(directory) = animation_snapshots {
         std::fs::create_dir_all(&directory)?;
@@ -93,7 +110,7 @@ fn main() -> Result<()> {
                 options.height,
                 render::offscreen_panel(
                     &gpu,
-                    &panel::zones(snapshot, options.width, options.height)?,
+                    &panel::build(snapshot, options.width, options.height, options.view)?,
                     options.width,
                     options.height,
                 )?,

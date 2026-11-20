@@ -62,3 +62,9 @@ replay of any retired identity. Once that history is full it refuses a new
 generation with an explicit restart error; it does not evict identities and
 silently permit old data to return. New revisions of the current generation
 continue to work.
+
+The optional `activity` field carries a separate trusted generation, sessions,
+watches, subscriber-scoped notices, terminal leases, effects, warnings, and the
+owner broker's `effects_generation`. Hosts and expiries may be null; null means
+unavailable, not an empty or expired resource. `scheme/activity.scm` normalizes
+these APIs. Use `scheme/live.scm --activity` to include them in live snapshots.

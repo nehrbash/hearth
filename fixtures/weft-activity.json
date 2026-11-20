@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "kind": "snapshot",
+  "workspace": "isolated",
+  "generation": "fixture-1",
+  "revision": 1,
+  "zones": [
+    {
+      "name": "status",
+      "type": "text",
+      "display": "Workspace ready",
+      "rows": []
+    },
+    {
+      "name": "checks",
+      "type": "metric",
+      "display": "42",
+      "rows": []
+    },
+    {
+      "name": "milestones",
+      "type": "table",
+      "display": "",
+      "rows": [
+        [
+          "Milestone",
+          "State"
+        ],
+        [
+          "Runtime",
+          "Ready"
+        ],
+        [
+          "Zones",
+          "Connected"
+        ]
+      ]
+    },
+    {
+      "name": "flow",
+      "type": "wiring",
+      "display": "",
+      "rows": [
+        [
+          "Weft",
+          "Snapshot"
+        ],
+        [
+          "Snapshot",
+          "Hearth"
+        ]
+      ]
+    }
+  ],
+  "activity": {
+    "generation": "trusted-fixture",
+    "sessions": [
+      {
+        "id": "codex:renderer",
+        "provider": "codex",
+        "status": "active",
+        "host": {
+          "buffer": "hearth-dev",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/8"
+        },
+        "delivery": "codex-send"
+      },
+      {
+        "id": "claude:review",
+        "provider": "claude",
+        "status": "idle",
+        "host": null,
+        "delivery": "watch-wait"
+      }
+    ],
+    "watches": [
+      {
+        "subscriber": "review",
+        "target": {
+          "kind": "session",
+          "value": "codex:renderer"
+        },
+        "delivery": "claude:review"
+      }
+    ],
+    "notices": [
+      {
+        "id": 18,
+        "subscriber": "review",
+        "kind": "turn-finished",
+        "source": "codex:renderer",
+        "text": "Zones view passed its snapshot checks."
+      }
+    ],
+    "leases": [
+      {
+        "buffer": "hearth-dev",
+        "holder": "codex",
+        "expires_at_ms": null
+      }
+    ],
+    "effects": [],
+    "effects_generation": "fixture-1",
+    "warnings": [
+      "Host unavailable for claude:review; lease expiry is not exported."
+    ],
+    "notice_history_limit": 128,
+    "notice_scope": "current-watch-subscribers"
+  }
+}

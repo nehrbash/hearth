@@ -79,3 +79,17 @@ claim terminal leases.
 Animated inputs have magnitude at most 1e12. Spring frequency (Hz) and damping
 ratio must each lie in 1e-6..=1e6; tolerance is finite and positive. Scene updates
 validate accumulated translations and extents before replacing the visible tree.
+
+## Activity
+
+```sh
+cargo run -- --state fixtures/weft-activity.json --view activity --snapshot artifacts/activity.png
+cargo run -- --view activity --listen "$XDG_RUNTIME_DIR/hearth/ui.sock"
+guile -L scheme scheme/live.scm "$XDG_RUNTIME_DIR/hearth/ui.sock" --activity
+```
+
+Activity shows session host and delivery, watch targets, retained notices and
+terminal lease holders. Missing host information is explicit; lease expiry is
+unavailable in the current Weft API. Notices cover current watch subscribers
+within Weft's bounded history. An inspection warning is not an empty inventory.
+The snapshot carries separate generations for trusted activity and owner effects.

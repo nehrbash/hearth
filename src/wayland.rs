@@ -41,6 +41,7 @@ use crate::{
 };
 
 pub struct SurfaceOptions {
+    pub view: panel::View,
     pub width: u32,
     pub height: u32,
     pub frames: Option<u32>,
@@ -53,6 +54,7 @@ pub struct SurfaceOptions {
 impl Default for SurfaceOptions {
     fn default() -> Self {
         Self {
+            view: panel::View::Zones,
             width: 480,
             height: 320,
             frames: None,
@@ -177,6 +179,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         panel_renderer,
         panel: None,
         snapshots,
+        view: options.view,
         listener,
         configured: false,
         registry: RegistryState::new(&globals),
@@ -259,6 +262,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
 }
 
 struct App {
+    view: panel::View,
     surface: wgpu::Surface<'static>,
     layer: LayerSurface,
     _connection: Connection,
@@ -292,12 +296,14 @@ impl App {
                 generation: "awaiting".into(),
                 revision: 0,
                 zones: Vec::new(),
+                activity: None,
             };
             let current = self.snapshots.current();
-            self.panel = Some(panel::zones(
+            self.panel = Some(panel::build(
                 current.as_deref().unwrap_or(&waiting),
                 self.config.width,
                 self.config.height,
+                self.view,
             )?);
         }
         Ok(())
@@ -314,7 +320,7 @@ impl App {
         let Some(snapshot) = listener.take_latest() else {
             return Ok(());
         };
-        let next = match panel::zones(&snapshot, self.config.width, self.config.height) {
+        let next = match panel::build(&snapshot, self.config.width, self.config.height, self.view) {
             Ok(panel) => panel,
             Err(error) => {
                 eprintln!("snapshot rejected: {error}");
