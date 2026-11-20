@@ -24,12 +24,13 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-use crate::gpu::Gpu;
+use crate::{gpu::Gpu, render::Renderer, scene::Scene};
 
 pub struct SurfaceOptions {
     pub width: u32,
     pub height: u32,
     pub frames: Option<u32>,
+    pub scene: Option<Scene>,
 }
 
 impl Default for SurfaceOptions {
@@ -38,6 +39,7 @@ impl Default for SurfaceOptions {
             width: 480,
             height: 320,
             frames: None,
+            scene: None,
         }
     }
 }
@@ -87,12 +89,18 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
     let config = surface
         .get_default_config(&gpu.adapter, options.width, options.height)
         .context("No supported surface configuration")?;
+    let renderer = options
+        .scene
+        .as_ref()
+        .map(|_| Renderer::new(&gpu, config.format));
     let mut app = App {
         surface,
         layer,
         _connection: conn.clone(),
         gpu,
         config,
+        scene: options.scene,
+        renderer,
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         frames: 0,
@@ -116,6 +124,8 @@ struct App {
     _connection: Connection,
     gpu: Gpu,
     config: wgpu::SurfaceConfiguration,
+    scene: Option<Scene>,
+    renderer: Option<Renderer>,
     registry: RegistryState,
     outputs: OutputState,
     frames: u32,
@@ -138,16 +148,27 @@ impl App {
             .get_current_texture()
             .context("Cannot acquire surface texture")?;
         let view = frame.texture.create_view(&Default::default());
-        self.gpu.clear(
-            &view,
-            wgpu::Color {
-                r: 0.035,
-                g: 0.065,
-                b: 0.11,
-                a: 1.0,
-            },
-        );
+        if let (Some(scene), Some(renderer)) = (&mut self.scene, &self.renderer) {
+            renderer.draw(
+                &self.gpu,
+                &view,
+                scene,
+                [self.config.width, self.config.height],
+            );
+            scene.take_damage();
+        } else {
+            self.gpu.clear(
+                &view,
+                wgpu::Color {
+                    r: 0.035,
+                    g: 0.065,
+                    b: 0.11,
+                    a: 1.0,
+                },
+            );
+        }
         self.frames += 1;
+        eprintln!("presented_frame={}", self.frames);
         if self.limit.is_some_and(|limit| self.frames >= limit) {
             self.exit = true;
         } else if self.limit.is_some() {
