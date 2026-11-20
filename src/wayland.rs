@@ -38,13 +38,16 @@ use wayland_client::{
 use crate::{
     animation::Seconds,
     animation_demo::Demo,
+    binding::BoundScene,
     gpu::Gpu,
     owner::{CommandRequest, OwnerActions},
     owner_panel::{self, OwnerButton},
     panel::{self, Panel},
     protocol::{Snapshot, SnapshotListener, SnapshotStore},
+    reactive::{Runtime, Signal},
     render::{PanelRenderer, Renderer},
-    scene::Scene,
+    scene::{Node, Scene},
+    scene_data,
     text::Label,
     workspace_panel,
     workspaces::{Instance, WorkspaceFeed, WorkspaceSnapshot},
@@ -200,9 +203,25 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         Some(demo) => Some(demo.scene()?),
         None => options.scene,
     };
-    let renderer = scene.as_ref().map(|_| Renderer::new(&gpu, config.format));
-    let panel_renderer =
-        (zones_mode || workspace_mode).then(|| PanelRenderer::new(&gpu, config.format));
+    let bound_scene = if matches!(options.view, panel::View::Scene) && !workspace_mode {
+        let runtime = Runtime::new();
+        let initial = snapshots
+            .current()
+            .map(|snapshot| scene_data::build_nodes(snapshot.scene.as_deref().unwrap_or(&[])))
+            .transpose()?
+            .unwrap_or_default();
+        let nodes = runtime.signal(initial);
+        let input = nodes.clone();
+        let mut bound = BoundScene::new(&runtime, move |context| context.read(&input))?;
+        bound.flush()?;
+        Some((nodes, bound))
+    } else {
+        None
+    };
+    let renderer =
+        (scene.is_some() || bound_scene.is_some()).then(|| Renderer::new(&gpu, config.format));
+    let panel_renderer = ((zones_mode || workspace_mode) && bound_scene.is_none())
+        .then(|| PanelRenderer::new(&gpu, config.format));
     let mut app = App {
         workspace_mode,
         workspace_feed,
@@ -215,6 +234,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         gpu,
         config,
         scene,
+        bound_scene,
         animation,
         last_frame: None,
         frame_pending: false,
@@ -344,6 +364,7 @@ struct App {
     gpu: Gpu,
     config: wgpu::SurfaceConfiguration,
     scene: Option<Scene>,
+    bound_scene: Option<(Signal<Vec<Node>>, BoundScene)>,
     renderer: Option<Renderer>,
     panel_renderer: Option<PanelRenderer>,
     panel: Option<Panel>,
@@ -376,6 +397,7 @@ impl App {
                 revision: 0,
                 zones: Vec::new(),
                 activity: None,
+                scene: None,
             };
             let current = self.snapshots.current();
             let (panel, buttons) = self.build_panel(current.as_deref().unwrap_or(&waiting))?;
@@ -551,6 +573,31 @@ impl App {
         let Some(snapshot) = listener.take_latest() else {
             return Ok(());
         };
+        if let Some((input, bound)) = &mut self.bound_scene {
+            let nodes = match scene_data::build_nodes(snapshot.scene.as_deref().unwrap_or(&[])) {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    eprintln!("snapshot rejected: {error}");
+                    return Ok(());
+                }
+            };
+            if let Err(error) = self.snapshots.apply((*snapshot).clone()) {
+                eprintln!("snapshot rejected: {error}");
+                return Ok(());
+            }
+            input.set(nodes);
+            let stats = bound.flush()?;
+            let changed = bound.take_damage();
+            eprintln!(
+                "scene_snapshot revision={} computations={} changed={changed}",
+                snapshot.revision,
+                stats.effects + stats.memos
+            );
+            if changed && self.configured {
+                self.draw(qh);
+            }
+            return Ok(());
+        }
         let (next, buttons) = match self.build_panel(&snapshot) {
             Ok(panel) => panel,
             Err(error) => {
@@ -598,7 +645,15 @@ impl App {
             .get_current_texture()
             .context("Cannot acquire surface texture")?;
         let view = frame.texture.create_view(&Default::default());
-        if let (Some(panel), Some(renderer)) = (&self.panel, &mut self.panel_renderer) {
+        if let (Some((_, bound)), Some(renderer)) = (&mut self.bound_scene, &mut self.renderer) {
+            renderer.draw(
+                &self.gpu,
+                &view,
+                bound.scene(),
+                [self.config.width, self.config.height],
+            )?;
+            bound.take_damage();
+        } else if let (Some(panel), Some(renderer)) = (&self.panel, &mut self.panel_renderer) {
             renderer.draw(
                 &self.gpu,
                 &view,

@@ -146,3 +146,19 @@ connection is shown explicitly while reconnecting to the same instance. Monitor
 selection is available for headless snapshots; native placement determines its
 monitor. This implements the workspace indicator's state semantics; Burl's tarot
 art, app seals, popouts and workspace dispatch remain separate widget work.
+
+## Scheme scenes and reactive widgets
+
+```sh
+cargo run -- --view scene --listen "$XDG_RUNTIME_DIR/hearth/ui.sock"
+guile -L scheme scheme/scene-demo.scm "$XDG_RUNTIME_DIR/hearth/ui.sock"
+cargo run -- --view scene --state fixtures/scheme-scene.json --snapshot artifacts/scheme-scene.png
+```
+
+The `(scene)` module constructs retained scene data and sends it through the same
+private socket as workspace snapshots. `--view scene` uses a 640×400 demo surface.
+The Rust `SceneBuilder` composes nodes; `BoundScene` connects signals to validated
+scenes. Signals coalesce, unchanged values stay clean, and disposing an owner
+releases its computations. A panicking computation is disposed before unwinding.
+The fixture proves identical Scheme/Rust trees for status, metric and session
+widgets; two PNGs verify a signal-driven update without manual invalidation.

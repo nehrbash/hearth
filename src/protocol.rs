@@ -29,6 +29,8 @@ pub struct Snapshot {
     pub zones: Vec<Zone>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<crate::activity::Activity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<Vec<crate::scene_data::SceneData>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -73,6 +75,10 @@ impl Snapshot {
     }
 
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        if let Some(scene) = &self.scene {
+            crate::scene_data::build_nodes(scene)
+                .map_err(|error| ProtocolError(error.to_string()))?;
+        }
         if let Some(activity) = &self.activity {
             activity
                 .validate()
@@ -657,5 +663,32 @@ mod tests {
             &serde_json::to_vec(&snapshot).expect("JSON"),
         );
         assert_eq!(wait_for(|| listener.take_latest()).revision, 1);
+    }
+    #[test]
+    fn scene_updates_validate_before_replacing_the_current_snapshot() {
+        let mut store = SnapshotStore::default();
+        let first = Snapshot::decode(include_bytes!("../fixtures/scheme-scene.json"))
+            .expect("scene fixture");
+        store.apply(first.clone()).expect("initial scene");
+        let mut invalid = first.clone();
+        invalid.revision += 1;
+        invalid.scene = Some(vec![crate::scene_data::SceneData::Rect {
+            bounds: [0.0, 0.0, -1.0, 20.0],
+            color: [1.0; 4],
+        }]);
+        assert!(store.apply(invalid).is_err());
+        assert_eq!(store.current().expect("retained snapshot").as_ref(), &first);
+        let mut changed = first;
+        changed.revision += 1;
+        changed.scene = Some(Vec::new());
+        assert!(
+            store
+                .apply(changed)
+                .expect("clear scene")
+                .scene
+                .as_ref()
+                .expect("scene")
+                .is_empty()
+        );
     }
 }

@@ -248,6 +248,7 @@ mod tests {
 
     fn snapshot(expected: &str) -> Snapshot {
         Snapshot {
+            scene: None,
             version: 1,
             kind: "snapshot".into(),
             workspace: "isolated".into(),

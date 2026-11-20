@@ -16,11 +16,16 @@ pub enum View {
     Zones,
     Activity,
     Owner,
+    Scene,
 }
 
 pub fn build(snapshot: &Snapshot, width: u32, height: u32, view: View) -> Result<Panel> {
     match view {
         View::Zones => zones(snapshot, width, height),
+        View::Scene => Ok(Panel {
+            scene: crate::scene_data::build_scene(snapshot.scene.as_deref().unwrap_or_default())?,
+            labels: Vec::new(),
+        }),
         View::Activity => crate::activity_panel::build(snapshot, width, height),
         View::Owner => Ok(crate::owner_panel::build(snapshot, width, height)?.panel),
     }

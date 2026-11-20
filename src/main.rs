@@ -37,12 +37,13 @@ fn main() -> Result<()> {
             "--view" => {
                 options.view = match args
                     .next()
-                    .context("--view requires zones, activity, or owner")?
+                    .context("--view requires zones, activity, owner, or scene")?
                     .as_str()
                 {
                     "zones" => panel::View::Zones,
                     "activity" => panel::View::Activity,
                     "owner" => panel::View::Owner,
+                    "scene" => panel::View::Scene,
                     other => bail!("Unknown view: {other}"),
                 };
             }
@@ -84,7 +85,7 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
+                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner|scene] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
                 );
                 return Ok(());
             }
@@ -140,6 +141,10 @@ fn main() -> Result<()> {
     }
     let zones_mode = zones.is_some() || options.listen.is_some();
     anyhow::ensure!(
+        options.view == panel::View::Zones || zones_mode,
+        "--view requires --state or --listen"
+    );
+    anyhow::ensure!(
         !(zones_mode && (show_scene || options.animate || animation_snapshots.is_some())),
         "Zones mode cannot be combined with a scene or animation demo"
     );
@@ -159,6 +164,10 @@ fn main() -> Result<()> {
         } else {
             680
         };
+    }
+    if zones_mode && options.view == panel::View::Scene {
+        options.width = 640;
+        options.height = 400;
     }
     if let Some(directory) = animation_snapshots {
         std::fs::create_dir_all(&directory)?;

@@ -15,3 +15,8 @@ pub mod wayland;
 pub mod effects;
 pub mod workspace_panel;
 pub mod workspaces;
+
+pub mod binding;
+pub mod builder;
+pub mod reactive;
+pub mod scene_data;

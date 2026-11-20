@@ -68,3 +68,24 @@ watches, subscriber-scoped notices, terminal leases, effects, warnings, and the
 owner broker's `effects_generation`. Hosts and expiries may be null; null means
 unavailable, not an empty or expired resource. `scheme/activity.scm` normalizes
 these APIs. Use `scheme/live.scm --activity` to include them in live snapshots.
+
+## Scene data
+
+A snapshot may include `scene`, an array of nodes selected with `--view scene`.
+The `(scene)` Guile module builds Rect, Text, Group and Clip data. Rust decodes
+these values without evaluating Scheme or source code. Scene updates share the
+snapshot generation/revision rules and are validated before publication.
+
+Nodes use a `type` tag (`rect`, `text`, `group`, `clip`). Bounds are `[x,y,w,h]`;
+groups carry `offset` and `children`. Rect colors are linear float RGBA; text
+colors are byte RGBA. Text supports `font_size`, `family`, `weight`, `overflow`
+(`clip`, `wrap`, `ellipsis`) and optional clipping bounds. Limits are 4096 nodes,
+64 nesting levels, 4096 bytes per text label, 256 bytes per family name, and
+512-pixel font size, within the existing 1 MiB message limit. Unknown fields and
+invalid geometry reject the complete update. An empty scene clears its contents.
+
+Rust signals hold the accepted nodes. A coalesced reactive flush updates scene
+damage before rendering; equal scene content stays idle even with a newer
+snapshot revision. Scheme runs only in the producer process. Rust-only Shader
+and Layer APIs remain available to native widgets; arbitrary WGSL is not part of
+the socket protocol.
