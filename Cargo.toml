@@ -10,6 +10,7 @@ anyhow = "1"
 libc = "0.2"
 signal-hook = "0.3"
 glyphon = "0.10"
+unicode-segmentation = "1.13"
 pollster = "0.4"
 png = "0.18"
 bytemuck = { version = "1", features = ["derive"] }

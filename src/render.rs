@@ -1,6 +1,6 @@
 use crate::{
     gpu::Gpu,
-    scene::{Bounds, Scene},
+    scene::{Bounds, PaintOp, Quad, Scene},
 };
 use anyhow::{Context, Result};
 use std::{
@@ -27,6 +27,8 @@ struct Vertex {
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    text: Option<crate::text::TextSystem>,
+    format: wgpu::TextureFormat,
 }
 
 impl Renderer {
@@ -65,12 +67,92 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             });
-        Self { pipeline }
+        Self {
+            pipeline,
+            text: None,
+            format,
+        }
     }
 
-    pub fn draw(&self, gpu: &Gpu, view: &wgpu::TextureView, scene: &Scene, size: [u32; 2]) {
+    pub fn draw(
+        &mut self,
+        gpu: &Gpu,
+        view: &wgpu::TextureView,
+        scene: &Scene,
+        size: [u32; 2],
+    ) -> Result<()> {
+        anyhow::ensure!(
+            size[0] > 0 && size[1] > 0,
+            "Render dimensions must be positive"
+        );
+        let operations = scene.paint_ops(Bounds::new(0.0, 0.0, size[0] as f32, size[1] as f32));
+        self.draw_quads(gpu, view, &[], size, wgpu::LoadOp::Clear(BACKGROUND));
+        let mut remaining = operations.as_slice();
+        while let Some(first) = remaining.first() {
+            let text_run = matches!(first, PaintOp::Text(_));
+            let count = remaining
+                .iter()
+                .take_while(|op| matches!(op, PaintOp::Text(_)) == text_run)
+                .count();
+            let (run, rest) = remaining.split_at(count);
+            if text_run {
+                let labels: Vec<_> = run
+                    .iter()
+                    .filter_map(|op| match op {
+                        PaintOp::Text(label) => Some(label.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let text = self
+                    .text
+                    .get_or_insert_with(|| crate::text::TextSystem::new(gpu, self.format));
+                text.prepare(gpu, size, &labels)?;
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Scene text"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    text.render(&mut pass)?;
+                }
+                gpu.queue.submit([encoder.finish()]);
+            } else {
+                let quads: Vec<_> = run
+                    .iter()
+                    .filter_map(|op| match op {
+                        PaintOp::Rect(quad) => Some(*quad),
+                        _ => None,
+                    })
+                    .collect();
+                self.draw_quads(gpu, view, &quads, size, wgpu::LoadOp::Load);
+            }
+            remaining = rest;
+        }
+        Ok(())
+    }
+
+    fn draw_quads(
+        &self,
+        gpu: &Gpu,
+        view: &wgpu::TextureView,
+        quads: &[Quad],
+        size: [u32; 2],
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) {
         let mut vertices = Vec::new();
-        for quad in scene.quads(Bounds::new(0.0, 0.0, size[0] as f32, size[1] as f32)) {
+        for quad in quads {
             let b = quad.bounds;
             let x0 = b.x / size[0] as f32 * 2.0 - 1.0;
             let x1 = (b.x + b.width) / size[0] as f32 * 2.0 - 1.0;
@@ -99,7 +181,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(BACKGROUND),
+                        load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -139,7 +221,7 @@ impl PanelRenderer {
         size: [u32; 2],
     ) -> Result<()> {
         self.text.prepare(gpu, size, &panel.labels)?;
-        self.geometry.draw(gpu, view, &panel.scene, size);
+        self.geometry.draw(gpu, view, &panel.scene, size)?;
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -193,7 +275,7 @@ pub fn offscreen(gpu: &Gpu, scene: &Scene, width: u32, height: u32) -> Result<Ve
         &texture.create_view(&Default::default()),
         scene,
         [width, height],
-    );
+    )?;
     read_texture(gpu, &texture, width, height)
 }
 

@@ -21,7 +21,7 @@ supply its matching GPU driver and a Vulkan ICD. On Guix System the default
 profile already exposes these. If Vulkan cannot find the NVIDIA ICD, set
 `VK_DRIVER_FILES` to the host profile's `share/vulkan/icd.d/nvidia_icd.x86_64.json`.
 
-Retained scenes support ordered Rect, translated Group and nested Clip nodes.
+Retained scenes support ordered Rect and Text nodes, translated Group and nested Clip nodes.
 `Scene::replace` validates an entire update before applying it; identical updates
 stay clean. Colors are linear RGBA and both native and snapshot targets use sRGB.
 
@@ -115,3 +115,9 @@ argument, so a broker restart between inspection and execution is not guarded by
 the UI's local generation check. Closing the view does not revoke a submitted
 request. Broker responses are not proof of successful external effects; receipts
 arrive through subsequent state snapshots. Tests use mocked executors only.
+
+Text nodes preserve painter order across rectangle and text batches. Labels support
+clipping, word wrapping, and single-line ellipsis at shaped grapheme boundaries.
+Bundled fonts cover the mixed-script fixtures; system-font fallback is an explicit
+TextSystem option. `tests/text_scene_snapshot.rs` exercises translation, nested
+clipping, Arabic/Hebrew, combining marks, and overpainting at native resolution.

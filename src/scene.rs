@@ -1,3 +1,5 @@
+use crate::text::Label;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
     pub x: f32,
@@ -50,6 +52,7 @@ impl Bounds {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
+    Text(Label),
     Rect {
         bounds: Bounds,
         color: [f32; 4],
@@ -68,6 +71,12 @@ pub enum Node {
 pub struct Quad {
     pub bounds: Bounds,
     pub color: [f32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaintOp {
+    Rect(Quad),
+    Text(Label),
 }
 
 #[derive(Default)]
@@ -96,6 +105,10 @@ impl Scene {
             anyhow::ensure!(*count <= 4096, "Scene exceeds 4096 nodes");
             for node in nodes {
                 match node {
+                    Node::Text(label) => {
+                        label.validate()?;
+                        translated_label(label, offset).validate()?;
+                    }
                     Node::Rect { bounds, color } => {
                         anyhow::ensure!(
                             bounds.valid() && bounds.translated(offset).valid(),
@@ -144,15 +157,43 @@ impl Scene {
     }
 
     pub fn quads(&self, viewport: Bounds) -> Vec<Quad> {
-        fn visit(nodes: &[Node], offset: [f32; 2], clip: Bounds, out: &mut Vec<Quad>) {
+        self.paint_ops(viewport)
+            .into_iter()
+            .filter_map(|op| match op {
+                PaintOp::Rect(quad) => Some(quad),
+                PaintOp::Text(_) => None,
+            })
+            .collect()
+    }
+
+    pub fn paint_ops(&self, viewport: Bounds) -> Vec<PaintOp> {
+        fn visit(nodes: &[Node], offset: [f32; 2], clip: Bounds, out: &mut Vec<PaintOp>) {
             for node in nodes {
                 match node {
+                    Node::Text(label) => {
+                        let mut label = translated_label(label, offset);
+                        let [x, y, width, height] =
+                            label
+                                .clip
+                                .unwrap_or([clip.x, clip.y, clip.width, clip.height]);
+                        if let Some(visible) = Bounds::new(x, y, width, height).intersection(clip) {
+                            let [x, y, width, height] = label.bounds;
+                            if Bounds::new(x, y, width, height)
+                                .intersection(visible)
+                                .is_some()
+                            {
+                                label.clip =
+                                    Some([visible.x, visible.y, visible.width, visible.height]);
+                                out.push(PaintOp::Text(label));
+                            }
+                        }
+                    }
                     Node::Rect { bounds, color } => {
                         if let Some(bounds) = bounds.translated(offset).intersection(clip) {
-                            out.push(Quad {
+                            out.push(PaintOp::Rect(Quad {
                                 bounds,
                                 color: *color,
-                            });
+                            }));
                         }
                     }
                     Node::Group {
@@ -178,6 +219,17 @@ impl Scene {
         visit(&self.roots, [0.0; 2], viewport, &mut out);
         out
     }
+}
+
+fn translated_label(label: &Label, offset: [f32; 2]) -> Label {
+    let mut label = label.clone();
+    label.bounds[0] += offset[0];
+    label.bounds[1] += offset[1];
+    if let Some(clip) = &mut label.clip {
+        clip[0] += offset[0];
+        clip[1] += offset[1];
+    }
+    label
 }
 
 pub fn rect(x: f32, y: f32, width: f32, height: f32, color: [f32; 4]) -> Node {
@@ -212,6 +264,82 @@ pub fn demo() -> anyhow::Result<Scene> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_keeps_layout_origin_and_intersects_translated_clips_in_paint_order()
+    -> anyhow::Result<()> {
+        let label = Label::new("nested", [1.0, 2.0, 100.0, 40.0], 16.0, [255; 4])
+            .with_clip([2.0, 3.0, 30.0, 20.0]);
+        let scene = Scene::new(vec![Node::Group {
+            offset: [10.0, 20.0],
+            children: vec![Node::Clip {
+                bounds: Bounds::new(0.0, 0.0, 20.0, 20.0),
+                children: vec![Node::Group {
+                    offset: [3.0, 4.0],
+                    children: vec![
+                        rect(0.0, 0.0, 20.0, 20.0, [1.0; 4]),
+                        Node::Text(label),
+                        rect(1.0, 1.0, 2.0, 2.0, [0.0; 4]),
+                    ],
+                }],
+            }],
+        }])?;
+        let operations = scene.paint_ops(Bounds::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(operations.len(), 3);
+        assert!(matches!(operations[0], PaintOp::Rect(_)));
+        let PaintOp::Text(label) = &operations[1] else {
+            panic!("Text must remain between rectangles")
+        };
+        assert_eq!(label.bounds, [14.0, 26.0, 100.0, 40.0]);
+        assert_eq!(label.clip, Some([15.0, 27.0, 15.0, 13.0]));
+        assert!(matches!(operations[2], PaintOp::Rect(_)));
+        assert!(
+            scene
+                .paint_ops(Bounds::new(80.0, 80.0, 10.0, 10.0))
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_text_update_preserves_previous_scene_and_damage() -> anyhow::Result<()> {
+        let nodes = vec![Node::Text(Label::new(
+            "kept",
+            [0.0, 0.0, 100.0, 30.0],
+            16.0,
+            [255; 4],
+        ))];
+        let mut scene = Scene::new(nodes.clone())?;
+        scene.take_damage();
+        assert!(!scene.replace(nodes)?);
+        let before = scene.paint_ops(Bounds::new(0.0, 0.0, 200.0, 200.0));
+        assert!(
+            scene
+                .replace(vec![Node::Text(Label::new(
+                    "invalid",
+                    [0.0; 4],
+                    f32::NAN,
+                    [255; 4]
+                ))])
+                .is_err()
+        );
+        assert!(
+            scene
+                .replace(vec![Node::Group {
+                    offset: [f32::MAX, 0.0],
+                    children: vec![Node::Text(Label::new(
+                        "overflow",
+                        [f32::MAX, 0.0, 10.0, 10.0],
+                        16.0,
+                        [255; 4]
+                    ))],
+                }])
+                .is_err()
+        );
+        assert_eq!(scene.paint_ops(Bounds::new(0.0, 0.0, 200.0, 200.0)), before);
+        assert!(!scene.take_damage());
+        Ok(())
+    }
 
     #[test]
     fn nested_clip_and_translation_preserve_paint_order() -> anyhow::Result<()> {

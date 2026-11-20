@@ -449,13 +449,13 @@ impl App {
                 panel,
                 [self.config.width, self.config.height],
             )?;
-        } else if let (Some(scene), Some(renderer)) = (&mut self.scene, &self.renderer) {
+        } else if let (Some(scene), Some(renderer)) = (&mut self.scene, &mut self.renderer) {
             renderer.draw(
                 &self.gpu,
                 &view,
                 scene,
                 [self.config.width, self.config.height],
-            );
+            )?;
             scene.take_damage();
         } else {
             self.gpu.clear(

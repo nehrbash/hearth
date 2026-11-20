@@ -3,6 +3,7 @@ use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap, fontdb,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::gpu::Gpu;
 
@@ -11,6 +12,7 @@ pub enum Overflow {
     #[default]
     Clip,
     Wrap,
+    Ellipsis,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,12 +56,18 @@ impl Label {
         self
     }
 
+    /// Show one line, marking any omitted content with an ellipsis.
+    pub fn ellipsis(mut self) -> Self {
+        self.overflow = Overflow::Ellipsis;
+        self
+    }
+
     pub fn with_clip(mut self, bounds: [f32; 4]) -> Self {
         self.clip = Some(bounds);
         self
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             valid_bounds(self.bounds),
             "Text bounds must be finite and nonnegative in size"
@@ -127,7 +135,11 @@ fn font_system(include_system_fonts: bool) -> FontSystem {
 }
 
 fn shape(font_system: &mut FontSystem, label: &Label) -> Buffer {
-    shape_with_height(font_system, label, Some(label.bounds[3]))
+    if label.overflow == Overflow::Ellipsis {
+        shape_ellipsis(font_system, label)
+    } else {
+        shape_with_height(font_system, label, Some(label.bounds[3]))
+    }
 }
 
 fn shape_with_height(font_system: &mut FontSystem, label: &Label, height: Option<f32>) -> Buffer {
@@ -139,7 +151,7 @@ fn shape_with_height(font_system: &mut FontSystem, label: &Label, height: Option
     buffer.set_wrap(
         font_system,
         match label.overflow {
-            Overflow::Clip => Wrap::None,
+            Overflow::Clip | Overflow::Ellipsis => Wrap::None,
             Overflow::Wrap => Wrap::WordOrGlyph,
         },
     );
@@ -156,10 +168,59 @@ fn shape_with_height(font_system: &mut FontSystem, label: &Label, height: Option
     buffer
 }
 
+fn shape_ellipsis(font_system: &mut FontSystem, label: &Label) -> Buffer {
+    let mut candidate = label.clone();
+    candidate.overflow = Overflow::Clip;
+    if label.bounds[3] < label.font_size * 1.35 {
+        candidate.text.clear();
+        return shape_with_height(font_system, &candidate, Some(label.bounds[3]));
+    }
+    let first_line = label.text.split(['\r', '\n']).next().unwrap_or_default();
+    candidate.text = first_line.to_owned();
+    let original = shape_with_height(font_system, &candidate, Some(label.bounds[3]));
+    if first_line.len() == label.text.len() && fits_width(&original, label.bounds[2]) {
+        return original;
+    }
+    candidate.text = "…".into();
+    let mut best = shape_with_height(font_system, &candidate, Some(label.bounds[3]));
+    if !fits_width(&best, label.bounds[2]) {
+        candidate.text.clear();
+        return shape_with_height(font_system, &candidate, Some(label.bounds[3]));
+    }
+    let boundaries: Vec<_> = std::iter::once(0)
+        .chain(
+            first_line
+                .grapheme_indices(true)
+                .map(|(index, grapheme)| index + grapheme.len()),
+        )
+        .collect();
+    let mut low = 0;
+    let mut high = boundaries.len();
+    while low + 1 < high {
+        let middle = low + (high - low) / 2;
+        candidate.text = format!("{}…", &first_line[..boundaries[middle]]);
+        let buffer = shape_with_height(font_system, &candidate, Some(label.bounds[3]));
+        if fits_width(&buffer, label.bounds[2]) {
+            low = middle;
+            best = buffer;
+        } else {
+            high = middle;
+        }
+    }
+    best
+}
+
+fn fits_width(buffer: &Buffer, width: f32) -> bool {
+    buffer
+        .layout_runs()
+        .all(|run| run.line_w.is_finite() && run.line_w <= width)
+}
+
 /// Check full fixture-font content against its layout and clipping bounds.
 pub fn fully_visible(label: &Label) -> Result<bool> {
     label.validate()?;
     if label.text.len() > 4096
+        || (label.overflow == Overflow::Ellipsis && label.text.contains(['\r', '\n']))
         || label.font_size > 512.0
         || label.color[3] == 0
         || label.bounds[2] == 0.0
@@ -320,6 +381,74 @@ impl TextSystem {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn ellipsis_preserves_fitting_text_and_bounds_long_text() {
+        let mut fonts = font_system(false);
+        let mut label = Label::new("Hearth", [0.0, 0.0, 100.0, 40.0], 20.0, [255; 4]).ellipsis();
+        let buffer = shape(&mut fonts, &label);
+        assert_eq!(buffer.lines[0].text(), "Hearth");
+        label.text = "Hearth workspaces with long names".into();
+        let buffer = shape(&mut fonts, &label);
+        assert!(buffer.lines[0].text().ends_with('…'));
+        assert!(fits_width(&buffer, label.bounds[2]));
+        label.bounds[2] = 1.0;
+        assert!(shape(&mut fonts, &label).lines[0].text().is_empty());
+    }
+
+    #[test]
+    fn ellipsis_keeps_grapheme_clusters_and_mixed_scripts() {
+        let mut fonts = font_system(false);
+        let label = Label::new(
+            "e\u{301}".repeat(30),
+            [0.0, 0.0, 85.0, 40.0],
+            20.0,
+            [255; 4],
+        )
+        .ellipsis();
+        let buffer = shape(&mut fonts, &label);
+        let text = buffer.lines[0].text();
+        assert!(text.ends_with("\u{301}…"));
+        assert!(fits_width(&buffer, label.bounds[2]));
+        for text in [
+            "العربية עברית Hearth Ελληνικά",
+            "עברית العربية Hearth Ελληνικά",
+        ] {
+            let label = Label::new(text, [0.0, 0.0, 140.0, 40.0], 20.0, [255; 4]).ellipsis();
+            let buffer = shape(&mut fonts, &label);
+            assert!(buffer.lines[0].text().ends_with('…'));
+            assert!(fits_width(&buffer, label.bounds[2]));
+            assert!(
+                buffer
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .all(|glyph| glyph.glyph_id != 0)
+            );
+        }
+    }
+
+    #[test]
+    fn ellipsis_marks_omitted_lines_and_visibility_checks_original() -> Result<()> {
+        let mut fonts = font_system(false);
+        let mut label =
+            Label::new("first\nsecond", [0.0, 0.0, 200.0, 100.0], 20.0, [255; 4]).ellipsis();
+        assert_eq!(shape(&mut fonts, &label).lines[0].text(), "first…");
+        assert!(!fully_visible(&label)?);
+        assert_eq!(
+            shape(&mut fonts, &label.clone().wrap())
+                .layout_runs()
+                .count(),
+            2
+        );
+        label.text = "first\n".into();
+        assert_eq!(shape(&mut fonts, &label).lines[0].text(), "first…");
+        assert!(!fully_visible(&label)?);
+        label.text = "first".into();
+        assert!(fully_visible(&label)?);
+        label.text = "first ".repeat(20);
+        assert!(!fully_visible(&label)?);
+        Ok(())
+    }
 
     #[test]
     fn fixture_fonts_shape_mixed_scripts_without_missing_glyphs() {
