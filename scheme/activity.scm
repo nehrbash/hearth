@@ -76,14 +76,6 @@
         (unless (eof-object? (read port)) (error "Trailing Weft activity data"))
         value))))
 
-(define (isolated-generation command)
-  (let ((reply (read-value (command "workspace-eval" "(workspace-state)"))))
-    (unless (eq? 'ok (assq-ref reply 'status))
-      (error "Cannot inspect isolated workspace generation" reply))
-    (let ((generation (assq-ref (read-value (assq-ref reply 'value)) 'generation)))
-      (unless (string? generation) (error "Missing isolated generation"))
-      generation)))
-
 (define (atom-text value)
   (cond ((string? value) value)
         ((symbol? value) (symbol->string value))
@@ -189,11 +181,11 @@
            (owner-state
              (catch #t
                (lambda ()
-                 (let* ((generation (isolated-generation command))
-                        (effects (vector->list
-                                   (assoc-ref (json-string->scm (command "owner" "view")) "effects"))))
-                   (unless (equal? generation (isolated-generation command))
-                     (error "Isolated workspace restarted during owner export"))
+                 (let* ((view (json-string->scm (command "owner" "view")))
+                        (generation (assoc-ref view "generation"))
+                        (effects (vector->list (assoc-ref view "effects"))))
+                   (unless (and (string? generation) (<= 1 (string-length generation) 1024))
+                     (error "Weft owner view lacks broker generation; update the Weft CLI/broker for guarded owner controls"))
                    (cons generation effects)))
                (lambda (key . arguments)
                  (warn! (format #f "Owner effects unavailable: ~a" (exception-summary key arguments)))

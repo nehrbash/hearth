@@ -27,6 +27,7 @@
     (notices . ,(ok '()))))
 
 (define owner-fails? #f)
+(define owner-generation? #t)
 (define mock-calls 0)
 (define (mock-command . arguments)
   (set! mock-calls (+ mock-calls 1))
@@ -34,16 +35,16 @@
     (("eval" expression)
      (check (string-contains expression "status pid tty") "Session query must request pid")
      (reply raw))
-    (("workspace-eval" _) (reply '((generation . "isolated"))))
     (("owner" "view")
      (if owner-fails?
          (error "Permission denied" 'broker '((private . "must-not-render")))
-         "{\"effects\":[]}"))
+         (if owner-generation? "{\"generation\":\"broker-generation\",\"effects\":[]}" "{\"effects\":[]}")))
     (_ (error "Unexpected mock command" arguments))))
 
 (let ()
     (let* ((result (hearth-activity #:command mock-command))
            (warnings (vector->list (assq-ref result 'warnings))))
+      (check (equal? "broker-generation" (assq-ref result 'effects_generation)) "Use broker generation from the same effects reply")
       (check (= 3 (length warnings)) "Keep relevant PID and provider discovery failures")
       (check (any (lambda (text) (string-contains text "Process 123")) warnings) "Relevant PID warning missing")
       (check (not (any (lambda (text) (string-contains text "456")) warnings)) "Unrelated process warning leaked")
@@ -63,7 +64,15 @@
       (check (not (string-contains owner "must-not-render")) "Nested exception data leaked")
       (check (eq? 'null (assq-ref result 'effects_generation)) "Failed owner source must stay unknown")))
 
-(check (= 7 mock-calls) "Every export command must use the injected runner")
+(check (= 4 mock-calls) "Every export command must use the injected runner")
+
+(set! owner-fails? #f) (set! owner-generation? #f)
+(let* ((result (hearth-activity #:command mock-command))
+       (warnings (vector->list (assq-ref result 'warnings))))
+  (check (eq? 'null (assq-ref result 'effects_generation)) "Old owner views must disable controls")
+  (check (= 0 (vector-length (assq-ref result 'effects))) "Unguarded owner effects must not be exposed")
+  (check (any (lambda (warning) (string-contains warning "lacks broker generation")) warnings)
+         "Old deployment needs an explicit compatibility diagnostic"))
 
 (define capture
   (eval `(letrec ,(cadr query) capture) (current-module)))

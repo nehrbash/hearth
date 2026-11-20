@@ -171,12 +171,12 @@ Proposals use escaped text so control characters remain visible. Approval is
 disabled when the complete proposal does not fit. Rejection remains available
 for pending proposals. Interrupted proposals require a fresh proposal in Weft.
 
-The UI checks the displayed generation, exact content and pending state, and
-allows one request at a time with no automatic retry. Weft verifies exact content
-and pending state at execution. Its current command API has no atomic generation
-argument, so a broker restart between inspection and execution is not guarded by
-the UI's local generation check. Closing the view does not revoke a submitted
-request. Broker responses are not proof of successful external effects; receipts
+The UI checks the displayed broker generation, exact content and pending state,
+and allows one request at a time with no automatic retry. Weft checks generation
+and exact content atomically at the decision boundary. This requires a matching
+Weft CLI and broker with `decide-generation`; older deployments fail closed and
+must be upgraded by the owner. Hearth never retries through the legacy unguarded
+route. Closing the view does not revoke a submitted request. Broker responses are not proof of successful external effects; receipts
 arrive through subsequent state snapshots. Tests use mocked executors only.
 
 Text nodes preserve painter order across rectangle and text batches. Labels support

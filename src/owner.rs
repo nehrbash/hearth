@@ -98,10 +98,12 @@ impl CommandRequest {
         Ok(())
     }
 
-    pub fn arguments(&self) -> [String; 4] {
+    pub fn arguments(&self) -> [String; 6] {
         [
             "owner".into(),
             self.decision.as_str().into(),
+            "--generation".into(),
+            self.generation.clone(),
             self.id.to_string(),
             self.expected.clone(),
         ]
@@ -235,7 +237,7 @@ fn execute(request: &CommandRequest) -> Result<String, String> {
         Ok(bounded(&output.stdout))
     } else {
         Err(format!(
-            "Broker request failed ({}): {}{}",
+            "Generation-bound owner decision failed ({}); refresh the proposal and verify the Weft CLI/broker support --generation. No unguarded retry was sent: {}{}",
             output.status,
             bounded(&output.stderr),
             bounded(&output.stdout)
@@ -287,7 +289,14 @@ mod tests {
         let request = CommandRequest::capture(&current, 3, Decision::Approve).expect("request");
         assert_eq!(
             request.arguments(),
-            ["owner", "approve", "3", &current.effects[0].expected]
+            [
+                "owner",
+                "approve",
+                "--generation",
+                "isolated",
+                "3",
+                &current.effects[0].expected
+            ]
         );
     }
 
