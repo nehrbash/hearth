@@ -11,3 +11,5 @@ pub mod render;
 pub mod scene;
 pub mod text;
 pub mod wayland;
+
+pub mod effects;

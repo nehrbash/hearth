@@ -29,6 +29,8 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     text: Option<crate::text::TextSystem>,
     format: wgpu::TextureFormat,
+    surfaces: Vec<crate::effects::NodeSurface>,
+    pub(crate) moon_art: std::sync::Arc<std::sync::OnceLock<crate::effects::Layer>>,
 }
 
 impl Renderer {
@@ -71,6 +73,8 @@ impl Renderer {
             pipeline,
             text: None,
             format,
+            surfaces: Vec::new(),
+            moon_art: Default::default(),
         }
     }
 
@@ -81,18 +85,75 @@ impl Renderer {
         scene: &Scene,
         size: [u32; 2],
     ) -> Result<()> {
+        self.draw_with_clear(gpu, view, scene, size, BACKGROUND)
+    }
+
+    pub(crate) fn prepare(&mut self, gpu: &Gpu, scene: &Scene, size: [u32; 2]) -> Result<()> {
+        let mut index = 0;
+        for operation in scene.paint_ops(Bounds::new(0.0, 0.0, size[0] as f32, size[1] as f32)) {
+            if let PaintOp::Surface { bounds, node, .. } = operation {
+                let dimensions = [bounds.width.ceil() as u32, bounds.height.ceil() as u32];
+                let key = match &node {
+                    crate::scene::Node::Shader { kind, .. } => Some(kind.clone()),
+                    _ => None,
+                };
+                if self
+                    .surfaces
+                    .get(index)
+                    .is_none_or(|surface| surface.source.size != dimensions || surface.key != key)
+                {
+                    let surface = crate::effects::NodeSurface::new(
+                        gpu,
+                        self.format,
+                        dimensions,
+                        key,
+                        self.moon_art.clone(),
+                    )?;
+                    if index == self.surfaces.len() {
+                        self.surfaces.push(surface);
+                    } else {
+                        self.surfaces[index] = surface;
+                    }
+                }
+                self.surfaces[index].prepare(gpu, &node)?;
+                index += 1;
+            }
+        }
+        self.surfaces.truncate(index);
+        Ok(())
+    }
+
+    pub(crate) fn draw_with_clear(
+        &mut self,
+        gpu: &Gpu,
+        view: &wgpu::TextureView,
+        scene: &Scene,
+        size: [u32; 2],
+        clear: wgpu::Color,
+    ) -> Result<()> {
         anyhow::ensure!(
             size[0] > 0 && size[1] > 0,
             "Render dimensions must be positive"
         );
+        self.prepare(gpu, scene, size)?;
+        let mut surface_index = 0;
         let operations = scene.paint_ops(Bounds::new(0.0, 0.0, size[0] as f32, size[1] as f32));
-        self.draw_quads(gpu, view, &[], size, wgpu::LoadOp::Clear(BACKGROUND));
+        self.draw_quads(gpu, view, &[], size, wgpu::LoadOp::Clear(clear));
         let mut remaining = operations.as_slice();
         while let Some(first) = remaining.first() {
+            if let PaintOp::Surface { bounds, clip, node } = first {
+                self.surfaces[surface_index].draw(gpu, view, size, *bounds, *clip, node)?;
+                surface_index += 1;
+                remaining = &remaining[1..];
+                continue;
+            }
             let text_run = matches!(first, PaintOp::Text(_));
             let count = remaining
                 .iter()
-                .take_while(|op| matches!(op, PaintOp::Text(_)) == text_run)
+                .take_while(|op| {
+                    !matches!(op, PaintOp::Surface { .. })
+                        && matches!(op, PaintOp::Text(_)) == text_run
+                })
                 .count();
             let (run, rest) = remaining.split_at(count);
             if text_run {
@@ -295,7 +356,12 @@ pub fn offscreen_panel(
     read_texture(gpu, &texture, width, height)
 }
 
-fn read_texture(gpu: &Gpu, texture: &wgpu::Texture, width: u32, height: u32) -> Result<Vec<u8>> {
+pub(crate) fn read_texture(
+    gpu: &Gpu,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
     let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
         * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {

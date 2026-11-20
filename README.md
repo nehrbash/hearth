@@ -121,3 +121,9 @@ clipping, word wrapping, and single-line ellipsis at shaped grapheme boundaries.
 Bundled fonts cover the mixed-script fixtures; system-font fallback is an explicit
 TextSystem option. `tests/text_scene_snapshot.rs` exercises translation, nested
 clipping, Arabic/Hebrew, combining marks, and overpainting at native resolution.
+
+Retained Shader and Layer nodes render at local bounds, obey ancestor clips,
+and compose in scene order. Layers render their children into transparent targets;
+blur uses two GPU passes. Shader uniforms are Rust data. Invalid nested WGSL is
+rejected before clearing the previous frame. Resource limits, the custom fragment
+contract, and Burl asset provenance are in [effects](docs/effects.md).

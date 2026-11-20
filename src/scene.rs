@@ -51,7 +51,32 @@ impl Bounds {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum ShaderKind {
+    Moon,
+    Joined,
+    Custom(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LayerEffect {
+    None,
+    Blur { radius: f32 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Node {
+    Shader {
+        bounds: Bounds,
+        kind: ShaderKind,
+        time: f32,
+        parameters: [f32; 4],
+    },
+    Layer {
+        bounds: Bounds,
+        children: Vec<Node>,
+        effect: LayerEffect,
+    },
+
     Text(Label),
     Rect {
         bounds: Bounds,
@@ -75,6 +100,11 @@ pub struct Quad {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaintOp {
+    Surface {
+        bounds: Bounds,
+        clip: Bounds,
+        node: Node,
+    },
     Rect(Quad),
     Text(Label),
 }
@@ -99,12 +129,44 @@ impl Scene {
             depth: usize,
             count: &mut usize,
             offset: [f32; 2],
+            pixels: &mut (u64, u32),
         ) -> anyhow::Result<()> {
             anyhow::ensure!(depth <= 64, "Scene nesting exceeds 64");
             *count += nodes.len();
             anyhow::ensure!(*count <= 4096, "Scene exceeds 4096 nodes");
             for node in nodes {
                 match node {
+                    Node::Shader {
+                        bounds,
+                        kind,
+                        time,
+                        parameters,
+                    } => {
+                        validate_surface(*bounds, offset, pixels)?;
+                        anyhow::ensure!(
+                            time.is_finite()
+                                && *time >= 0.0
+                                && parameters.iter().all(|v| v.is_finite()),
+                            "Invalid shader uniforms"
+                        );
+                        if let ShaderKind::Custom(source) = kind {
+                            anyhow::ensure!(source.len() <= 65536, "Shader exceeds 64 KiB");
+                        }
+                    }
+                    Node::Layer {
+                        bounds,
+                        children,
+                        effect,
+                    } => {
+                        validate_surface(*bounds, offset, pixels)?;
+                        if let LayerEffect::Blur { radius } = effect {
+                            anyhow::ensure!(
+                                radius.is_finite() && (0.0..=64.0).contains(radius),
+                                "Invalid blur radius"
+                            );
+                        }
+                        validate(children, depth + 1, count, [0.0; 2], pixels)?;
+                    }
                     Node::Text(label) => {
                         label.validate()?;
                         translated_label(label, offset).validate()?;
@@ -130,20 +192,20 @@ impl Scene {
                             local.iter().chain(&translated).all(|v| v.is_finite()),
                             "Invalid translation"
                         );
-                        validate(children, depth + 1, count, translated)?;
+                        validate(children, depth + 1, count, translated, pixels)?;
                     }
                     Node::Clip { bounds, children } => {
                         anyhow::ensure!(
                             bounds.valid() && bounds.translated(offset).valid(),
                             "Invalid clip geometry"
                         );
-                        validate(children, depth + 1, count, offset)?;
+                        validate(children, depth + 1, count, offset, pixels)?;
                     }
                 }
             }
             Ok(())
         }
-        validate(&roots, 0, &mut 0, [0.0; 2])?;
+        validate(&roots, 0, &mut 0, [0.0; 2], &mut (0, 0))?;
         let changed = self.roots != roots;
         if changed {
             self.roots = roots;
@@ -161,7 +223,7 @@ impl Scene {
             .into_iter()
             .filter_map(|op| match op {
                 PaintOp::Rect(quad) => Some(quad),
-                PaintOp::Text(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -170,6 +232,16 @@ impl Scene {
         fn visit(nodes: &[Node], offset: [f32; 2], clip: Bounds, out: &mut Vec<PaintOp>) {
             for node in nodes {
                 match node {
+                    Node::Shader { bounds, .. } | Node::Layer { bounds, .. } => {
+                        let bounds = bounds.translated(offset);
+                        if let Some(clip) = bounds.intersection(clip) {
+                            out.push(PaintOp::Surface {
+                                bounds,
+                                clip,
+                                node: node.clone(),
+                            });
+                        }
+                    }
                     Node::Text(label) => {
                         let mut label = translated_label(label, offset);
                         let [x, y, width, height] =
@@ -221,6 +293,29 @@ impl Scene {
     }
 }
 
+fn validate_surface(
+    bounds: Bounds,
+    offset: [f32; 2],
+    pixels: &mut (u64, u32),
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        bounds.valid()
+            && bounds.translated(offset).valid()
+            && bounds.width > 0.0
+            && bounds.height > 0.0
+            && bounds.width <= 4096.0
+            && bounds.height <= 4096.0,
+        "Invalid layer geometry"
+    );
+    pixels.0 += bounds.width.ceil() as u64 * bounds.height.ceil() as u64 * 3;
+    pixels.1 += 1;
+    anyhow::ensure!(
+        pixels.0 <= 16 * 1024 * 1024 && pixels.1 <= 128,
+        "Scene exceeds offscreen pixel or node budget"
+    );
+    Ok(())
+}
+
 fn translated_label(label: &Label, offset: [f32; 2]) -> Label {
     let mut label = label.clone();
     label.bounds[0] += offset[0];
@@ -264,6 +359,33 @@ pub fn demo() -> anyhow::Result<Scene> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offscreen_budgets_and_uniforms_are_validated_atomically() -> anyhow::Result<()> {
+        let mut scene = Scene::new(vec![rect(0.0, 0.0, 10.0, 10.0, [1.0; 4])])?;
+        scene.take_damage();
+        let layer = |width, height| Node::Layer {
+            bounds: Bounds::new(0.0, 0.0, width, height),
+            children: vec![],
+            effect: LayerEffect::None,
+        };
+        assert!(scene.replace(vec![layer(4097.0, 1.0)]).is_err());
+        assert!(scene.replace(vec![layer(4096.0, 4096.0)]).is_err());
+        assert!(scene.replace(vec![layer(1.0, 1.0); 129]).is_err());
+        assert!(
+            scene
+                .replace(vec![Node::Shader {
+                    bounds: Bounds::new(0.0, 0.0, 1.0, 1.0),
+                    kind: ShaderKind::Joined,
+                    time: 0.0,
+                    parameters: [f32::NAN; 4],
+                }])
+                .is_err()
+        );
+        assert_eq!(scene.quads(Bounds::new(0.0, 0.0, 20.0, 20.0)).len(), 1);
+        assert!(!scene.take_damage());
+        Ok(())
+    }
 
     #[test]
     fn text_keeps_layout_origin_and_intersects_translated_clips_in_paint_order()
