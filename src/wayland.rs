@@ -1,4 +1,4 @@
-use std::ptr::NonNull;
+use std::{ptr::NonNull, time::Instant};
 
 use anyhow::{Context, Result};
 use raw_window_handle::{
@@ -24,13 +24,14 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-use crate::{gpu::Gpu, render::Renderer, scene::Scene};
+use crate::{animation::Seconds, animation_demo::Demo, gpu::Gpu, render::Renderer, scene::Scene};
 
 pub struct SurfaceOptions {
     pub width: u32,
     pub height: u32,
     pub frames: Option<u32>,
     pub scene: Option<Scene>,
+    pub animate: bool,
 }
 
 impl Default for SurfaceOptions {
@@ -40,6 +41,7 @@ impl Default for SurfaceOptions {
             height: 320,
             frames: None,
             scene: None,
+            animate: false,
         }
     }
 }
@@ -89,17 +91,26 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
     let config = surface
         .get_default_config(&gpu.adapter, options.width, options.height)
         .context("No supported surface configuration")?;
-    let renderer = options
-        .scene
-        .as_ref()
-        .map(|_| Renderer::new(&gpu, config.format));
+    let animation = if options.animate {
+        Some(Demo::new()?)
+    } else {
+        None
+    };
+    let scene = match &animation {
+        Some(demo) => Some(demo.scene()?),
+        None => options.scene,
+    };
+    let renderer = scene.as_ref().map(|_| Renderer::new(&gpu, config.format));
     let mut app = App {
         surface,
         layer,
         _connection: conn.clone(),
         gpu,
         config,
-        scene: options.scene,
+        scene,
+        animation,
+        last_frame: None,
+        frame_pending: false,
         renderer,
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
@@ -126,6 +137,9 @@ struct App {
     config: wgpu::SurfaceConfiguration,
     scene: Option<Scene>,
     renderer: Option<Renderer>,
+    animation: Option<Demo>,
+    last_frame: Option<Instant>,
+    frame_pending: bool,
     registry: RegistryState,
     outputs: OutputState,
     frames: u32,
@@ -143,6 +157,16 @@ impl App {
     }
 
     fn draw_frame(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        let now = Instant::now();
+        let delta = self
+            .last_frame
+            .map_or(0.0, |previous| now.duration_since(previous).as_secs_f64());
+        self.last_frame = Some(now);
+        if let Some(animation) = &mut self.animation
+            && animation.advance(Seconds::new(delta)?)
+        {
+            self.scene = Some(animation.scene()?);
+        }
         let frame = self
             .surface
             .get_current_texture()
@@ -168,10 +192,19 @@ impl App {
             );
         }
         self.frames += 1;
-        eprintln!("presented_frame={}", self.frames);
+        eprintln!(
+            "presented_frame={} interval_ms={:.3} animation_active={} x={:.3}",
+            self.frames,
+            delta * 1000.0,
+            self.animation.as_ref().is_some_and(Demo::active),
+            self.animation.as_ref().map_or(0.0, Demo::position)
+        );
         if self.limit.is_some_and(|limit| self.frames >= limit) {
             self.exit = true;
-        } else if self.limit.is_some() {
+        } else if (self.limit.is_some() || self.animation.as_ref().is_some_and(Demo::active))
+            && !self.frame_pending
+        {
+            self.frame_pending = true;
             self.layer
                 .wl_surface()
                 .frame(qh, self.layer.wl_surface().clone());
@@ -199,6 +232,7 @@ impl CompositorHandler for App {
     ) {
     }
     fn frame(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
+        self.frame_pending = false;
         self.draw(qh);
     }
     fn surface_enter(
