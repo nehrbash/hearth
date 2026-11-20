@@ -127,11 +127,15 @@ fn font_system(include_system_fonts: bool) -> FontSystem {
 }
 
 fn shape(font_system: &mut FontSystem, label: &Label) -> Buffer {
+    shape_with_height(font_system, label, Some(label.bounds[3]))
+}
+
+fn shape_with_height(font_system: &mut FontSystem, label: &Label, height: Option<f32>) -> Buffer {
     let mut buffer = Buffer::new(
         font_system,
         Metrics::new(label.font_size, label.font_size * 1.35),
     );
-    buffer.set_size(font_system, Some(label.bounds[2]), Some(label.bounds[3]));
+    buffer.set_size(font_system, Some(label.bounds[2]), height);
     buffer.set_wrap(
         font_system,
         match label.overflow {
@@ -150,6 +154,70 @@ fn shape(font_system: &mut FontSystem, label: &Label) -> Buffer {
     );
     buffer.shape_until_scroll(font_system, false);
     buffer
+}
+
+/// Check full fixture-font content against its layout and clipping bounds.
+pub fn fully_visible(label: &Label) -> Result<bool> {
+    label.validate()?;
+    if label.text.len() > 4096
+        || label.font_size > 512.0
+        || label.color[3] == 0
+        || label.bounds[2] == 0.0
+        || label.bounds[3] == 0.0
+    {
+        return Ok(false);
+    }
+    let mut fonts = font_system(false);
+    // A bounded buffer exposes only visible runs and would hide overflowing lines.
+    let buffer = shape_with_height(&mut fonts, label, None);
+    let clip = label.text_bounds();
+    let [x, y, _, _] = label.bounds;
+    for run in buffer.layout_runs() {
+        if ![run.line_top, run.line_height, run.line_w]
+            .iter()
+            .all(|value| value.is_finite())
+            || x < clip.left as f32
+            || x + run.line_w > clip.right as f32
+            || y + run.line_top < clip.top as f32
+            || y + run.line_top + run.line_height > clip.bottom as f32
+            || run.glyphs.iter().any(|glyph| glyph.glyph_id == 0)
+        {
+            return Ok(false);
+        }
+    }
+    let mut swash = SwashCache::new();
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            if x + glyph.x < clip.left as f32 || x + glyph.x + glyph.w > clip.right as f32 {
+                return Ok(false);
+            }
+            let physical = glyph.physical((x, y), 1.0);
+            let Some(image) = swash.get_image(&mut fonts, physical.cache_key) else {
+                if run
+                    .text
+                    .get(glyph.start..glyph.end)
+                    .is_none_or(|text| !text.chars().all(char::is_whitespace))
+                {
+                    return Ok(false);
+                }
+                continue;
+            };
+            if image.placement.width == 0 || image.placement.height == 0 {
+                continue;
+            }
+            let left = i64::from(physical.x) + i64::from(image.placement.left);
+            let top =
+                i64::from(physical.y) + run.line_y.round() as i64 - i64::from(image.placement.top);
+            if left < i64::from(clip.left)
+                || top < i64::from(clip.top)
+                || left + i64::from(image.placement.width) > i64::from(clip.right)
+                || top + i64::from(image.placement.height) > i64::from(clip.bottom)
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 pub struct TextSystem {
@@ -316,5 +384,67 @@ mod tests {
         label.bounds[2] = 100.0;
         label.clip = Some([0.0, f32::NAN, 20.0, 20.0]);
         assert!(label.validate().is_err());
+    }
+
+    #[test]
+    fn full_visibility_accepts_short_text_and_rejects_horizontal_overflow() -> Result<()> {
+        let mut label = Label::new("Approve", [10.0, 10.0, 200.0, 40.0], 20.0, [255; 4]);
+        assert!(fully_visible(&label)?);
+        label.bounds[2] = 20.0;
+        assert!(!fully_visible(&label)?);
+        Ok(())
+    }
+
+    #[test]
+    fn full_visibility_measures_lines_beyond_the_visible_buffer() -> Result<()> {
+        let mut label = Label::new(
+            "first\nsecond\nthird",
+            [0.0, 0.0, 200.0, 40.0],
+            20.0,
+            [255; 4],
+        );
+        assert!(!fully_visible(&label)?);
+        label.bounds[3] = 81.0;
+        assert!(fully_visible(&label)?);
+        label.text = "a long label that wraps to several lines".into();
+        label.bounds[2] = 70.0;
+        label.overflow = Overflow::Wrap;
+        assert!(!fully_visible(&label)?);
+        label.bounds[3] = 400.0;
+        assert!(fully_visible(&label)?);
+        Ok(())
+    }
+
+    #[test]
+    fn full_visibility_counts_trailing_empty_lines_and_crlf() -> Result<()> {
+        let mut label = Label::new("line\n", [0.0, 0.0, 200.0, 27.0], 20.0, [255; 4]);
+        assert!(!fully_visible(&label)?);
+        label.bounds[3] = 54.0;
+        assert!(fully_visible(&label)?);
+        label.text = "line\r\n".into();
+        assert!(fully_visible(&label)?);
+        label.text = "line\n\n".into();
+        assert!(!fully_visible(&label)?);
+        label.bounds[3] = 81.0;
+        assert!(fully_visible(&label)?);
+        Ok(())
+    }
+
+    #[test]
+    fn full_visibility_requires_unclipped_glyphs_and_known_fonts() -> Result<()> {
+        let label = Label::new("Approve", [10.0, 10.0, 200.0, 40.0], 20.0, [255; 4]);
+        assert!(!fully_visible(
+            &label.clone().with_clip([20.0, 10.0, 200.0, 40.0])
+        )?);
+        assert!(!fully_visible(
+            &label.clone().with_clip([10.0, 10.0, 200.0, 10.0])
+        )?);
+        let mut missing = label.clone();
+        missing.text = "\u{10FFFF}".into();
+        assert!(!fully_visible(&missing)?);
+        let mut oversized = label;
+        oversized.text = "a".repeat(4097);
+        assert!(!fully_visible(&oversized)?);
+        Ok(())
     }
 }

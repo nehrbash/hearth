@@ -33,11 +33,12 @@ fn main() -> Result<()> {
             "--view" => {
                 options.view = match args
                     .next()
-                    .context("--view requires zones or activity")?
+                    .context("--view requires zones, activity, or owner")?
                     .as_str()
                 {
                     "zones" => panel::View::Zones,
                     "activity" => panel::View::Activity,
+                    "owner" => panel::View::Owner,
                     other => bail!("Unknown view: {other}"),
                 };
             }
@@ -51,6 +52,7 @@ fn main() -> Result<()> {
                         .into(),
                 )
             }
+            "--owner-controls" => options.owner_controls = true,
             "--animate" => options.animate = true,
             "--animation-snapshots" => {
                 animation_snapshots = Some(
@@ -61,13 +63,17 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate | --state FILE] [--view zones|activity] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
+                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
                 );
                 return Ok(());
             }
             _ => bail!("Unknown argument: {arg}"),
         }
     }
+    anyhow::ensure!(
+        !options.owner_controls || (options.view == panel::View::Owner && snapshot.is_none()),
+        "--owner-controls requires a native owner view"
+    );
     let zones_mode = zones.is_some() || options.listen.is_some();
     anyhow::ensure!(
         !(zones_mode && (show_scene || options.animate || animation_snapshots.is_some())),
@@ -84,7 +90,7 @@ fn main() -> Result<()> {
     }
     if zones_mode {
         options.width = 920;
-        options.height = if options.view == panel::View::Activity {
+        options.height = if options.view != panel::View::Zones {
             900
         } else {
             680

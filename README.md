@@ -93,3 +93,25 @@ terminal lease holders. Missing host information is explicit; lease expiry is
 unavailable in the current Weft API. Notices cover current watch subscribers
 within Weft's bounded history. An inspection warning is not an empty inventory.
 The snapshot carries separate generations for trusted activity and owner effects.
+
+## Owner decisions
+
+```sh
+cargo run -- --state fixtures/weft-owner.json --view owner --snapshot artifacts/owner.png
+cargo run -- --view owner --listen "$XDG_RUNTIME_DIR/hearth/ui.sock" --owner-controls
+guile -L scheme scheme/live.scm "$XDG_RUNTIME_DIR/hearth/ui.sock" --activity
+```
+
+Owner views default to read-only. `--owner-controls` enables explicit pointer
+press/release decisions through `weft owner`; render updates cannot issue commands.
+Proposals use escaped text so control characters remain visible. Approval is
+disabled when the complete proposal does not fit. Rejection remains available
+for pending proposals. Interrupted proposals require a fresh proposal in Weft.
+
+The UI checks the displayed generation, exact content and pending state, and
+allows one request at a time with no automatic retry. Weft verifies exact content
+and pending state at execution. Its current command API has no atomic generation
+argument, so a broker restart between inspection and execution is not guarded by
+the UI's local generation check. Closing the view does not revoke a submitted
+request. Broker responses are not proof of successful external effects; receipts
+arrive through subsequent state snapshots. Tests use mocked executors only.

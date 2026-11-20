@@ -3,6 +3,8 @@ pub mod activity_panel;
 pub mod animation;
 pub mod animation_demo;
 pub mod gpu;
+pub mod owner;
+pub mod owner_panel;
 pub mod panel;
 pub mod protocol;
 pub mod render;

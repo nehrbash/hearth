@@ -12,10 +12,15 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry,
+    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    seat::{
+        Capability, SeatHandler, SeatState,
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -27,13 +32,15 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, Proxy, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_surface},
+    protocol::{wl_output, wl_pointer, wl_seat, wl_surface},
 };
 
 use crate::{
     animation::Seconds,
     animation_demo::Demo,
     gpu::Gpu,
+    owner::{CommandRequest, OwnerActions},
+    owner_panel::{self, OwnerButton},
     panel::{self, Panel},
     protocol::{Snapshot, SnapshotListener, SnapshotStore},
     render::{PanelRenderer, Renderer},
@@ -41,6 +48,7 @@ use crate::{
 };
 
 pub struct SurfaceOptions {
+    pub owner_controls: bool,
     pub view: panel::View,
     pub width: u32,
     pub height: u32,
@@ -54,6 +62,7 @@ pub struct SurfaceOptions {
 impl Default for SurfaceOptions {
     fn default() -> Self {
         Self {
+            owner_controls: false,
             view: panel::View::Zones,
             width: 480,
             height: 320,
@@ -104,6 +113,10 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         "Surface dimensions must be positive"
     );
     anyhow::ensure!(options.frames != Some(0), "Frame count must be positive");
+    anyhow::ensure!(
+        !options.owner_controls || matches!(options.view, panel::View::Owner),
+        "Owner controls require the owner view"
+    );
     let shutdown = Shutdown::new()?;
     let listener = options
         .listen
@@ -178,6 +191,12 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         renderer,
         panel_renderer,
         panel: None,
+        owner_controls: options.owner_controls,
+        owner_actions: OwnerActions::new(options.owner_controls)?,
+        owner_buttons: Vec::new(),
+        pressed: None,
+        seats: SeatState::new(&globals, &qh),
+        pointer: None,
         snapshots,
         view: options.view,
         listener,
@@ -192,6 +211,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
     while !app.exit {
         events.dispatch_pending(&mut app)?;
         app.apply_updates(&qh)?;
+        app.apply_completions(&qh)?;
         if app.exit {
             break;
         }
@@ -223,6 +243,11 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
                 revents: 0,
             },
             libc::pollfd {
+                fd: app.owner_actions.completion_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
                 fd: shutdown.read.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
@@ -237,7 +262,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
             }
             return Err(error.into());
         }
-        if fds[2].revents & libc::POLLIN != 0 {
+        if fds[3].revents & libc::POLLIN != 0 {
             break;
         }
         anyhow::ensure!(
@@ -262,6 +287,12 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
 }
 
 struct App {
+    owner_controls: bool,
+    owner_actions: OwnerActions,
+    owner_buttons: Vec<OwnerButton>,
+    pressed: Option<CommandRequest>,
+    seats: SeatState,
+    pointer: Option<(wl_seat::WlSeat, wl_pointer::WlPointer)>,
     view: panel::View,
     surface: wgpu::Surface<'static>,
     layer: LayerSurface,
@@ -299,14 +330,58 @@ impl App {
                 activity: None,
             };
             let current = self.snapshots.current();
-            self.panel = Some(panel::build(
-                current.as_deref().unwrap_or(&waiting),
-                self.config.width,
-                self.config.height,
-                self.view,
-            )?);
+            let (panel, buttons) = self.build_panel(current.as_deref().unwrap_or(&waiting))?;
+            self.panel = Some(panel);
+            self.owner_buttons = buttons;
         }
         Ok(())
+    }
+
+    fn build_panel(&self, snapshot: &Snapshot) -> Result<(Panel, Vec<OwnerButton>)> {
+        if matches!(self.view, panel::View::Owner) {
+            let view = owner_panel::build_with_controls(
+                snapshot,
+                self.config.width,
+                self.config.height,
+                self.owner_controls,
+                self.owner_actions.is_busy(),
+            )?;
+            Ok((view.panel, view.buttons))
+        } else {
+            Ok((
+                panel::build(snapshot, self.config.width, self.config.height, self.view)?,
+                Vec::new(),
+            ))
+        }
+    }
+
+    fn apply_completions(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        self.owner_actions.drain_notifications()?;
+        if let Some(completion) = self.owner_actions.take_completion() {
+            match completion.result {
+                Ok(response) => eprintln!(
+                    "owner decision #{} broker response: {:?}; waiting for snapshot state",
+                    completion.request.id, response
+                ),
+                Err(error) => eprintln!(
+                    "owner decision #{} unconfirmed: {:?}",
+                    completion.request.id, error
+                ),
+            }
+            self.rebuild_panel()?;
+            if self.configured {
+                self.draw(qh);
+            }
+        }
+        Ok(())
+    }
+
+    fn request_at(&self, position: (f64, f64)) -> Option<CommandRequest> {
+        self.owner_buttons
+            .iter()
+            .find(|button| button.contains(position.0 as f32, position.1 as f32))?
+            .request
+            .clone()
     }
 
     fn apply_updates(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
@@ -320,7 +395,7 @@ impl App {
         let Some(snapshot) = listener.take_latest() else {
             return Ok(());
         };
-        let next = match panel::build(&snapshot, self.config.width, self.config.height, self.view) {
+        let (next, buttons) = match self.build_panel(&snapshot) {
             Ok(panel) => panel,
             Err(error) => {
                 eprintln!("snapshot rejected: {error}");
@@ -334,6 +409,7 @@ impl App {
                     snapshot.workspace, snapshot.generation, snapshot.revision
                 );
                 self.panel = Some(next);
+                self.owner_buttons = buttons;
                 if self.configured {
                     self.draw(qh);
                 }
@@ -496,10 +572,111 @@ impl ProvidesRegistryState for App {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry
     }
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 delegate_compositor!(App);
 delegate_layer!(App);
 delegate_output!(App);
 delegate_registry!(App);
+
+impl SeatHandler for App {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seats
+    }
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if self.owner_controls && capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seats.get_pointer(qh, &seat) {
+                Ok(pointer) => self.pointer = Some((seat, pointer)),
+                Err(error) => eprintln!("Cannot create owner pointer: {error}"),
+            }
+        }
+    }
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer {
+            self.remove_pointer(&seat);
+        }
+    }
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.remove_pointer(&seat);
+    }
+}
+impl App {
+    fn remove_pointer(&mut self, seat: &wl_seat::WlSeat) {
+        if self
+            .pointer
+            .as_ref()
+            .is_some_and(|(owner, _)| owner == seat)
+        {
+            if let Some((_, pointer)) = self.pointer.take() {
+                pointer.release();
+            }
+            self.pressed = None;
+        }
+    }
+}
+impl PointerHandler for App {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            if &event.surface != self.layer.wl_surface() {
+                continue;
+            }
+            match event.kind {
+                PointerEventKind::Leave { .. } => self.pressed = None,
+                PointerEventKind::Press { button: 0x110, .. } => {
+                    self.pressed = self.request_at(event.position)
+                }
+                PointerEventKind::Release { button: 0x110, .. } => {
+                    let Some(request) = self.pressed.take() else {
+                        continue;
+                    };
+                    if let Err(error) = self.apply_updates(qh) {
+                        eprintln!("Owner decision cancelled: {error}");
+                        continue;
+                    }
+                    if self.request_at(event.position).as_ref() != Some(&request) {
+                        continue;
+                    }
+                    let current = self.snapshots.current();
+                    let Some(activity) = current
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.activity.as_ref())
+                    else {
+                        continue;
+                    };
+                    if let Err(error) = self.owner_actions.submit(request, activity) {
+                        eprintln!("Owner decision not submitted: {error}");
+                    }
+                    if let Err(error) = self.rebuild_panel() {
+                        self.error = Some(error);
+                        self.exit = true;
+                    } else if self.configured {
+                        self.draw(qh);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+delegate_seat!(App);
+delegate_pointer!(App);

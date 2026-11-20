@@ -15,12 +15,14 @@ pub enum View {
     #[default]
     Zones,
     Activity,
+    Owner,
 }
 
 pub fn build(snapshot: &Snapshot, width: u32, height: u32, view: View) -> Result<Panel> {
     match view {
         View::Zones => zones(snapshot, width, height),
         View::Activity => crate::activity_panel::build(snapshot, width, height),
+        View::Owner => Ok(crate::owner_panel::build(snapshot, width, height)?.panel),
     }
 }
 
