@@ -35,3 +35,6 @@ pub mod notifications;
 
 pub mod audio;
 pub mod audio_pipewire;
+
+pub mod icons;
+pub mod tray;

@@ -143,3 +143,10 @@ The [native audio worker and Scheme controls](audio.md) expose bounded device,
 node, volume, mute and default state. Weft observations use `hearth-pipewire`.
 Controls bind the current connection and node identity; tests use an isolated
 PipeWire daemon with synthetic input/output nodes.
+
+## SystemTray
+
+The [tray worker and Scheme controls](tray.md) cooperate with an existing
+StatusNotifier watcher and acquire ownership only when free. Separate native
+item/menu controls and sanitized Weft publication share bounded observations.
+Use the tray publisher to remove icon bytes before storing `hearth-tray`.
