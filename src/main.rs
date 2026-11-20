@@ -19,6 +19,7 @@ fn main() -> Result<()> {
     let mut zones: Option<PathBuf> = None;
     let mut workspace_file: Option<PathBuf> = None;
     let mut monitor: Option<String> = None;
+    let mut channel_size: Option<(u32, u32)> = None;
     let mut animation_snapshots: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -28,6 +29,18 @@ fn main() -> Result<()> {
                     Some(args.next().context("--ui-socket requires a path")?.into())
             }
             "--channel" => options.channel = args.next().context("--channel requires a name")?,
+            "--size" => {
+                let value = args.next().context("--size requires WIDTHxHEIGHT")?;
+                let (width, height) = value
+                    .split_once('x')
+                    .context("--size requires WIDTHxHEIGHT")?;
+                let (width, height) = (width.parse::<u32>()?, height.parse::<u32>()?);
+                anyhow::ensure!(
+                    (1..=4096).contains(&width) && (1..=4096).contains(&height),
+                    "Channel size must be 1..4096 pixels per side"
+                );
+                channel_size = Some((width, height));
+            }
             "--frames" => {
                 options.frames = Some(args.next().context("--frames requires a count")?.parse()?)
             }
@@ -90,7 +103,7 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner|scene] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nInteractive: --listen SOCKET [--channel NAME] (--ui-socket is an alias). Legacy snapshots: --legacy-listen SOCKET.\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
+                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner|scene] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nInteractive: --listen SOCKET [--channel NAME] [--size WIDTHxHEIGHT] (--ui-socket is an alias). Legacy snapshots: --legacy-listen SOCKET.\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
                 );
                 return Ok(());
             }
@@ -117,6 +130,14 @@ fn main() -> Result<()> {
     if options.channel_socket.is_some() {
         options.width = if options.channel == "weft" { 920 } else { 420 };
         options.height = if options.channel == "weft" { 900 } else { 250 };
+    }
+    anyhow::ensure!(
+        channel_size.is_none() || options.channel_socket.is_some(),
+        "--size requires --listen"
+    );
+    if let Some((width, height)) = channel_size {
+        options.width = width;
+        options.height = height;
     }
     let workspace_mode = options.workspaces || workspace_file.is_some();
     anyhow::ensure!(

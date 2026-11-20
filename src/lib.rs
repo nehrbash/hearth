@@ -28,3 +28,6 @@ pub mod upower;
 
 pub mod mpris;
 pub mod path;
+
+pub mod bluetooth;
+pub mod bluetooth_agent;

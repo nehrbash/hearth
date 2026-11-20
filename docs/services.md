@@ -99,3 +99,10 @@ Five private-bus tests cover the eleven actions, owner replacement/loss,
 optional and malformed properties, disabled capabilities and empty discovery.
 The media PNG is a preview fixture, including its explicit overflow marker.
 [MPRIS player specification](https://specifications.freedesktop.org/mpris/latest/Player_Interface.html).
+
+## Bluetooth
+
+The [persistent Bluetooth service and native controller](bluetooth.md) provide
+BlueZ observations, discovery ownership, explicit controls and pairing prompts.
+Use `hearth-bluetooth --observe` for read-only Weft publication; normal mode
+accepts typed UI commands and keeps credentials out of shared state.

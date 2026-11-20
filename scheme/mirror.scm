@@ -29,12 +29,16 @@
 (define* (mirror-publish! name value #:key (command watch-command))
   (let* ((expression (publication name value))
          (oversize? (> (bytevector-length (string->utf8 (object->string expression))) 122880))
-         (bounded (if oversize?
+         (data (ui-field value "data"))
+         (sensitive? (and (list? data) (eq? #t (ui-field data "sensitive"))))
+         (bounded (if (or oversize? sensitive?)
                       (mirror-unavailable
                         (filter (lambda (pair)
                                   (member (car pair) '("channel" "epoch" "seq" "observed_at_ms"
                                                        channel epoch seq observed_at_ms))) value)
-                        (ui-field value "channel") "Scene exceeds the 120 KiB mirror publication budget")
+                        (ui-field value "channel")
+                        (if sensitive? "Sensitive UI content is excluded from Weft mirroring"
+                            "Scene exceeds the 120 KiB mirror publication budget"))
                       value)))
     (command "workspace-eval" (publication name bounded))
     bounded))

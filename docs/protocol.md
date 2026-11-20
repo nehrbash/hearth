@@ -184,6 +184,10 @@ summary preserving channel, epoch, sequence, timestamp and reason, without
 `nodes` or `data`. The subscription stays active; the next bounded update can
 restore available state.
 
+Channels marked `data.sensitive:true` are excluded from Weft mirroring. The
+mirror publishes an unavailable summary containing identity and reason, without
+node text or semantic data. Pairing controllers use this for ephemeral prompts.
+
 ## Legacy v1
 
 `--legacy-listen SOCKET` accepts one newline-terminated snapshot per connection:

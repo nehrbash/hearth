@@ -233,3 +233,6 @@ widgets; two PNGs verify a signal-driven update without manual invalidation.
 
 The [service adapter](docs/services.md) publishes read-only Hyprland monitor/workspace
 state and UPower battery state to Weft, independently of the frame loop.
+
+The [Bluetooth controller](docs/bluetooth.md) adds native device controls and
+explicit pairing prompts, backed by a persistent BlueZ worker and Scheme UI.

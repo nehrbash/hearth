@@ -1,0 +1,22 @@
+{
+  "channel": "bluetooth",
+  "connected": true,
+  "status": "available",
+  "sensitive": true,
+  "node_count": 40,
+  "native_size": [
+    720,
+    760
+  ],
+  "host_actions_sent": 0,
+  "renderer_exit": 0,
+  "controller_exit": 0,
+  "socket_removed": true,
+  "weft_publication": {
+    "status": "available",
+    "adapter_count": 1,
+    "device_count": 2,
+    "success": true,
+    "host_actions_sent": 0
+  }
+}
