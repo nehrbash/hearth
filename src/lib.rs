@@ -22,3 +22,4 @@ pub mod reactive;
 pub mod scene_data;
 
 pub mod services;
+pub mod upower;

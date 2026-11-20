@@ -25,7 +25,7 @@
        (= (length (delete-duplicates (map car object))) (length keys))))
 (define (unique? values) (= (length values) (length (delete-duplicates values))))
 
-(define (validate-state state)
+(define (validate-hyprland state)
   (require (object-keys? state '("instance" "monitors" "workspaces")) "Unexpected Hyprland state fields")
   (let ((instance (assoc-ref state "instance"))
         (monitors (assoc-ref state "monitors"))
@@ -63,18 +63,68 @@
     (require (unique? (map (lambda (workspace) (assoc-ref workspace "id")) (vector->list workspaces)))
              "Duplicate workspace IDs")))
 
+(define (u32? value) (integer-range? value 0 4294967295))
+(define (known-state raw)
+  (case raw ((1) "charging") ((2) "discharging") ((3) "empty")
+        ((4) "fully_charged") ((5) "pending_charge") ((6) "pending_discharge")
+        (else "unknown")))
+
+(define (validate-charge charge)
+  (require (list? charge) "Invalid UPower charge")
+  (let ((kind (assoc-ref charge "kind")))
+    (cond
+      ((equal? kind "percentage")
+       (require (and (object-keys? charge '("kind" "value"))
+                     (let ((value (assoc-ref charge "value")))
+                       (and (real? value) (<= 0 value 100)))) "Invalid battery percentage"))
+      ((equal? kind "coarse")
+       (require (and (object-keys? charge '("kind" "level"))
+                     (member (assoc-ref charge "level") '("low" "critical" "normal" "high" "full")))
+                "Invalid coarse battery level"))
+      ((equal? kind "unknown")
+       (require (and (object-keys? charge '("kind" "raw_level"))
+                     (u32? (assoc-ref charge "raw_level"))
+                     (not (memv (assoc-ref charge "raw_level") '(1 3 4 6 7 8))))
+                "Invalid unknown battery level"))
+      (else (error "Unsupported battery charge kind")))))
+
+(define (validate-upower state)
+  (require (object-keys? state '("on_battery" "display")) "Unexpected UPower state fields")
+  (require (boolean? (assoc-ref state "on_battery")) "Invalid on-battery observation")
+  (let* ((device (assoc-ref state "display"))
+         (presence (and (list? device) (assoc-ref device "presence"))))
+    (cond
+      ((equal? presence "absent")
+       (require (object-keys? device '("presence")) "Absent battery cannot contain measurements"))
+      ((equal? presence "present")
+       (require (object-keys? device '("presence" "kind" "raw_kind" "state" "raw_state" "charge"
+                                      "time_to_empty_seconds" "time_to_full_seconds")) "Unexpected UPower device fields")
+       (let ((kind (assoc-ref device "raw_kind")) (status (assoc-ref device "raw_state")))
+         (require (and (u32? kind) (u32? status)
+                       (equal? (assoc-ref device "kind") (case kind ((2) "battery") ((3) "ups") (else "unknown")))
+                       (equal? (assoc-ref device "state") (known-state status))) "Inconsistent UPower device kind or state"))
+       (validate-charge (assoc-ref device "charge"))
+       (for-each
+         (lambda (name)
+           (let ((value (assoc-ref device name)))
+             (require (or (eq? value 'null) (integer-range? value 1 9223372036854775807))
+                      "Battery time must be positive or unknown")))
+         '("time_to_empty_seconds" "time_to_full_seconds")))
+      (else (error "Unsupported battery presence")))))
+
 (define (validate-envelope value)
   (require (object-keys? value '("version" "service" "status" "observed_at_ms" "state" "error"))
            "Unexpected service envelope fields")
   (require (and (equal? (assoc-ref value "version") 1)
-                (equal? (assoc-ref value "service") "hyprland")) "Unsupported service or version")
+                (member (assoc-ref value "service") '("hyprland" "upower"))) "Unsupported service or version")
   (require (integer-range? (assoc-ref value "observed_at_ms") 0 18446744073709551615)
            "Invalid observation timestamp")
   (let ((status (assoc-ref value "status")) (state (assoc-ref value "state")) (failure (assoc-ref value "error")))
     (cond
       ((equal? status "available")
        (require (eq? failure 'null) "Available service cannot contain an error")
-       (validate-state state))
+       (if (equal? (assoc-ref value "service") "hyprland")
+           (validate-hyprland state) (validate-upower state)))
       ((equal? status "unavailable")
        (require (and (eq? state 'null) (identifier? failure 4096)) "Unavailable service needs an error and null state"))
       (else (error "Unsupported service status"))))
@@ -101,28 +151,56 @@
 (define (readable text)
   (string-join (string-tokenize text) " "))
 
+(define (hyprland-rows state)
+  (append
+    (map (lambda (monitor)
+           (list (string-append "Monitor " (assoc-ref monitor "name"))
+                 (string-append (number->string (assoc-ref monitor "active_workspace")) " active"
+                                (if (assoc-ref monitor "focused") "; focused" "")
+                                (let ((special (assoc-ref monitor "special_workspace")))
+                                  (if (eq? special 'null) "" (format #f "; special ~a" special))))))
+         (vector->list (assoc-ref state "monitors")))
+    (map (lambda (workspace)
+           (list (format #f "~a: ~a" (assoc-ref workspace "id") (assoc-ref workspace "name"))
+                 (let ((windows (assoc-ref workspace "windows")))
+                   (format #f "~a; ~a ~a" (assoc-ref workspace "monitor") windows
+                           (if (= windows 1) "window" "windows")))))
+         (vector->list (assoc-ref state "workspaces")))))
+
+(define (remaining-time value)
+  (cond ((eq? value 'null) "Unknown")
+        ((< value 60) (format #f "~a s" value))
+        ((< value 3600) (format #f "~a min" (quotient value 60)))
+        (else (format #f "~a h ~a min" (quotient value 3600) (quotient (modulo value 3600) 60)))))
+
+(define (upower-rows state)
+  (let* ((device (assoc-ref state "display"))
+         (power-row (list "On battery" (if (assoc-ref state "on_battery") "Yes" "No"))))
+    (if (equal? (assoc-ref device "presence") "absent")
+        (list '("Battery / UPS" "Absent") power-row)
+        (let* ((charge (assoc-ref device "charge"))
+               (charge-kind (assoc-ref charge "kind"))
+               (value (cond ((equal? charge-kind "percentage") (format #f "~a%" (assoc-ref charge "value")))
+                            ((equal? charge-kind "coarse") (string-append (string-titlecase (assoc-ref charge "level")) " (coarse)"))
+                            (else "Unknown"))))
+          (list (list (cond ((equal? (assoc-ref device "kind") "ups") "UPS")
+                           ((equal? (assoc-ref device "kind") "battery") "Battery")
+                           (else "Power device"))
+                      (string-titlecase (string-map (lambda (char) (if (char=? char #\_) #\space char)) (assoc-ref device "state"))))
+                (list "Charge" value) power-row
+                (list "Time to empty" (remaining-time (assoc-ref device "time_to_empty_seconds")))
+                (list "Time to full" (remaining-time (assoc-ref device "time_to_full_seconds"))))))))
+
 (define (table-rows envelope)
   (let ((status (assoc-ref envelope "status"))
+        (service (assoc-ref envelope "service"))
         (observed (number->string (assoc-ref envelope "observed_at_ms")))
         (state (assoc-ref envelope "state")))
     (append
-      `(("Name" "State") ("Hyprland" ,status) ("Observed UTC ms" ,observed))
-      (if (equal? status "unavailable")
-          `(("Diagnostic" ,(readable (assoc-ref envelope "error"))))
-          (append
-            (map (lambda (monitor)
-                   (list (string-append "Monitor " (assoc-ref monitor "name"))
-                         (string-append (number->string (assoc-ref monitor "active_workspace")) " active"
-                                        (if (assoc-ref monitor "focused") "; focused" "")
-                                        (let ((special (assoc-ref monitor "special_workspace")))
-                                          (if (eq? special 'null) "" (format #f "; special ~a" special))))))
-                 (vector->list (assoc-ref state "monitors")))
-            (map (lambda (workspace)
-                   (list (format #f "~a: ~a" (assoc-ref workspace "id") (assoc-ref workspace "name"))
-                         (let ((windows (assoc-ref workspace "windows")))
-                           (format #f "~a; ~a ~a" (assoc-ref workspace "monitor") windows
-                                   (if (= windows 1) "window" "windows")))))
-                 (vector->list (assoc-ref state "workspaces"))))))))
+      `(("Name" "State") (,(if (equal? service "hyprland") "Hyprland" "UPower") ,status) ("Observed UTC ms" ,observed))
+      (cond ((equal? status "unavailable") `(("Diagnostic" ,(readable (assoc-ref envelope "error")))))
+            ((equal? service "hyprland") (hyprland-rows state))
+            (else (upower-rows state))))))
 
 (define (weft-command expression)
   (let ((port (open-pipe* OPEN_READ "timeout" "--kill-after=1" "10" "weft" "workspace-eval" expression))
@@ -137,9 +215,10 @@
 
 (define* (hearth-service-publish! envelope #:key (command weft-command))
   (validate-envelope envelope)
-  (let* ((expression `(begin
-                       (saved-set! 'hearth-hyprland ',(scheme-data envelope))
-                       (zone-set! 'hearth-hyprland 'table ',(table-rows envelope))
+  (let* ((name (if (equal? (assoc-ref envelope "service") "hyprland") 'hearth-hyprland 'hearth-upower))
+         (expression `(begin
+                       (saved-set! ',name ',(scheme-data envelope))
+                       (zone-set! ',name 'table ',(table-rows envelope))
                        #t))
          (encoded (object->string expression)))
     (require (bounded-text? encoded 122880) "Service publication exceeds the 120 KiB workspace-eval argument limit")
@@ -189,7 +268,7 @@
     (when (memq key '(quit interrupt)) (apply throw key arguments))
     (format (current-error-port) "Hearth services: ~a~%"
             (error-description arguments)))
-  (let loop ((seen? #f))
+  (let loop ((seen '()))
     (let ((result (catch #t
                     (lambda ()
                       (let ((line (read-bounded-line port)))
@@ -197,25 +276,32 @@
                     (lambda (key . arguments) (report key arguments) #f))))
       (cond
         ((eq? result 'eof)
-         (if (or once? (not seen?)) #f
-             (catch #t
-               (lambda ()
-                 (hearth-service-publish!
-                   `(("version" . 1) ("service" . "hyprland") ("status" . "unavailable")
-                     ("observed_at_ms" . ,(now)) ("state" . null)
-                     ("error" . "Service stream stopped; start the producer to resume observations."))
-                   #:command command))
-               (lambda (key . arguments) (report key arguments) #f))))
-        ((not result) (if once? #f (loop seen?)))
+         (if (or once? (null? seen)) #f
+             (fold
+               (lambda (service successful?)
+                 (let ((published?
+                         (catch #t
+                           (lambda ()
+                             (hearth-service-publish!
+                               `(("version" . 1) ("service" . ,service) ("status" . "unavailable")
+                                 ("observed_at_ms" . ,(now)) ("state" . null)
+                                 ("error" . "Service stream stopped; start the producer to resume observations."))
+                               #:command command))
+                           (lambda (key . arguments) (report key arguments) #f))))
+                   (and published? successful?)))
+               #t seen)))
+        ((not result) (if once? #f (loop seen)))
         (else
          (let ((published? (catch #t
                              (lambda () (hearth-service-publish! result #:command command))
                              (lambda (key . arguments) (report key arguments) #f))))
-           (if once? published? (loop #t))))))))
+           (if once? published?
+               (let ((service (assoc-ref result "service")))
+                 (loop (if (member service seen) seen (cons service seen)))))))))))
 
 (when (string-suffix? "/services.scm" (car (command-line)))
   (match (cdr (command-line))
     (() (exit (if (hearth-service-stream (current-input-port)) 0 1)))
     (("--once") (exit (if (hearth-service-stream (current-input-port) #:once? #t) 0 1)))
-    (_ (display "Usage: hearth-service hyprland | guile -L scheme scheme/services.scm [--once]\n" (current-error-port))
+    (_ (display "Usage: hearth-service hyprland|upower | guile -L scheme scheme/services.scm [--once]\n" (current-error-port))
        (exit 2))))

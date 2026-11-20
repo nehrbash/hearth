@@ -249,3 +249,95 @@ fn sigterm_interrupts_a_partially_written_envelope_without_draining_stdout() -> 
     std::fs::remove_dir_all(directory)?;
     result
 }
+
+#[test]
+fn probe_timeout_and_cancellation_kill_and_reap_the_child() -> Result<()> {
+    use hearth::services::capture_probe;
+    for cancel in [false, true] {
+        let pidfile = std::env::temp_dir().join(format!(
+            "hearth-probe-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (read, mut stop) = UnixStream::pair()?;
+        let writer = if cancel {
+            Some(thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                stop.write_all(&[1]).expect("cancel probe");
+            }))
+        } else {
+            None
+        };
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "printf '%s' \"$$\" > \"$1\"; while :; do :; done",
+                "probe",
+            ])
+            .arg(&pidfile);
+        let started = Instant::now();
+        let result = capture_probe(&mut command, read.as_raw_fd(), Duration::from_millis(150));
+        if cancel {
+            assert!(result?.is_none());
+        } else {
+            assert!(result.is_err());
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
+        if let Some(writer) = writer {
+            writer.join().expect("cancellation writer");
+        }
+        let pid: i32 = std::fs::read_to_string(&pidfile)?.parse()?;
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        std::fs::remove_file(pidfile)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn probe_drains_both_pipes_and_bounds_flooding() -> Result<()> {
+    use hearth::services::capture_probe;
+    let (read, _stop) = UnixStream::pair()?;
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c","i=0; while [ \"$i\" -lt 10000 ]; do printf 'stdout-output'; printf 'stderr-output' >&2; i=$((i+1)); done"]);
+    let output = capture_probe(&mut command, read.as_raw_fd(), Duration::from_secs(2))?
+        .expect("probe output");
+    assert!(output.status.success());
+    assert_eq!(output.stdout.len(), 130000);
+    assert_eq!(output.stderr.len(), 130000);
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", "while :; do printf '%s' \"$1\"; done", "probe"])
+        .arg("x".repeat(8192));
+    let error = capture_probe(&mut command, read.as_raw_fd(), Duration::from_secs(2))
+        .err()
+        .expect("bounded output error");
+    assert!(error.to_string().contains("exceeds 1 MiB"));
+    Ok(())
+}
+
+#[test]
+fn upower_unavailable_once_and_broken_pipe_are_clean() -> Result<()> {
+    let command = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_hearth-service"));
+        c.arg("upower").env(
+            "DBUS_SYSTEM_BUS_ADDRESS",
+            "unix:path=/nonexistent/hearth-upower-test",
+        );
+        c
+    };
+    let output = command().arg("--once").output()?;
+    assert!(output.status.success());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["service"], "upower");
+    assert_eq!(envelope["status"], "unavailable");
+    assert!(envelope["state"].is_null());
+    let mut child = command().stdout(Stdio::piped()).spawn()?;
+    drop(child.stdout.take());
+    exited(&mut child)?;
+    Ok(())
+}

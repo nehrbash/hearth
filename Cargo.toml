@@ -8,6 +8,7 @@ description = "Native scene graph and Weft workspace UI"
 
 [dependencies]
 anyhow = "1"
+zbus = "5"
 libc = "0.2"
 signal-hook = "0.3"
 glyphon = "0.10"

@@ -20,27 +20,38 @@ pub enum Status {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ServiceEnvelope {
+pub struct ServiceEnvelope<T = WorkspaceSnapshot> {
     pub version: u32,
     pub service: String,
     pub status: Status,
     pub observed_at_ms: u64,
-    pub state: Option<WorkspaceSnapshot>,
+    pub state: Option<T>,
     pub error: Option<String>,
 }
 
-impl ServiceEnvelope {
+impl ServiceEnvelope<WorkspaceSnapshot> {
     pub fn observed(result: Result<WorkspaceSnapshot>) -> Self {
+        Self::observed_service(
+            "hyprland",
+            result.and_then(|snapshot| {
+                snapshot.validate()?;
+                Ok(snapshot)
+            }),
+        )
+    }
+}
+
+impl<T: Serialize> ServiceEnvelope<T> {
+    pub fn observed_service(service: &str, result: Result<T>) -> Self {
         let observed_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis()
             .min(u64::MAX as u128) as u64;
         let result = result.and_then(|snapshot| {
-            snapshot.validate()?;
             ensure!(
                 serde_json::to_vec(&snapshot)?.len() < MAX_LINE - 1024,
-                "Compositor snapshot exceeds service envelope budget"
+                "Snapshot exceeds service envelope budget"
             );
             Ok(snapshot)
         });
@@ -56,7 +67,7 @@ impl ServiceEnvelope {
                     Status::Unavailable,
                     None,
                     Some(if message.is_empty() {
-                        "Compositor unavailable".into()
+                        "Service unavailable".into()
                     } else {
                         message[..end].into()
                     }),
@@ -65,7 +76,7 @@ impl ServiceEnvelope {
         };
         Self {
             version: 1,
-            service: "hyprland".into(),
+            service: service.into(),
             status,
             observed_at_ms,
             state,
@@ -254,5 +265,186 @@ impl HyprlandService {
                 }
             }
         }
+    }
+}
+
+pub struct ProbeOutput {
+    pub status: std::process::ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+struct ProbeChild(std::process::Child);
+impl Drop for ProbeChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+pub fn capture_probe(
+    command: &mut Command,
+    stop_fd: i32,
+    timeout: Duration,
+) -> Result<Option<ProbeOutput>> {
+    if cancelled(stop_fd, Duration::ZERO)? {
+        return Ok(None);
+    }
+    let deadline = Instant::now() + timeout;
+    let mut child = ProbeChild(
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Start service probe")?,
+    );
+    let mut stdout = child.0.stdout.take().context("Missing probe stdout")?;
+    let mut stderr = child.0.stderr.take().context("Missing probe stderr")?;
+    nonblocking(stdout.as_raw_fd())?;
+    nonblocking(stderr.as_raw_fd())?;
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let (mut out_closed, mut err_closed) = (false, false);
+    loop {
+        if cancelled(stop_fd, Duration::ZERO)? {
+            return Ok(None);
+        }
+        ensure!(Instant::now() < deadline, "Service probe deadline exceeded");
+        let status = child.0.try_wait()?;
+        if out_closed
+            && err_closed
+            && let Some(status) = status
+        {
+            return Ok(Some(ProbeOutput {
+                status,
+                stdout: output,
+                stderr: errors,
+            }));
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: stop_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if out_closed { -1 } else { stdout.as_raw_fd() },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if err_closed { -1 } else { stderr.as_raw_fd() },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let delay = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .clamp(1, 20) as i32;
+        if unsafe { libc::poll(fds.as_mut_ptr(), 3, delay) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if fds[0].revents != 0 {
+            return Ok(None);
+        }
+        let read = |stream: &mut dyn Read,
+                    bytes: &mut Vec<u8>,
+                    closed: &mut bool,
+                    ready: i16|
+         -> Result<()> {
+            if ready == 0 {
+                return Ok(());
+            }
+            let mut buffer = [0; 8192];
+            match stream.read(&mut buffer) {
+                Ok(0) => *closed = true,
+                Ok(count) => {
+                    ensure!(
+                        bytes.len() + count <= MAX_LINE,
+                        "Service probe output exceeds 1 MiB"
+                    );
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+            Ok(())
+        };
+        read(&mut stdout, &mut output, &mut out_closed, fds[1].revents)?;
+        read(&mut stderr, &mut errors, &mut err_closed, fds[2].revents)?;
+    }
+}
+
+fn cancelled(stop_fd: i32, wait: Duration) -> io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: stop_fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                wait.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
+        if result >= 0 {
+            return Ok(descriptor.revents != 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+pub struct UpowerService {
+    executable: std::path::PathBuf,
+    due: Instant,
+}
+impl UpowerService {
+    pub fn new(executable: std::path::PathBuf) -> Self {
+        Self {
+            executable,
+            due: Instant::now(),
+        }
+    }
+    pub fn next(
+        &mut self,
+        stop_fd: i32,
+    ) -> Result<Option<ServiceEnvelope<crate::upower::UpowerSnapshot>>> {
+        if cancelled(stop_fd, self.due.saturating_duration_since(Instant::now()))? {
+            return Ok(None);
+        }
+        let result = capture_probe(
+            Command::new(&self.executable).arg("--probe-upower"),
+            stop_fd,
+            Duration::from_millis(2500),
+        );
+        let inspected = match result {
+            Ok(None) => return Ok(None),
+            Ok(Some(output)) => {
+                if output.status.success() {
+                    serde_json::from_slice(&output.stdout).context("Decode UPower probe")
+                } else {
+                    Err(anyhow::anyhow!(
+                        "UPower probe failed ({}): {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr)
+                    ))
+                }
+            }
+            Err(error) => Err(error),
+        };
+        self.due = Instant::now() + HEARTBEAT;
+        Ok(Some(ServiceEnvelope::observed_service("upower", inspected)))
     }
 }

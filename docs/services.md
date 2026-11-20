@@ -36,3 +36,28 @@ command has a ten-second deadline and a one-second forced-stop grace period.
 guile -L scheme tests/services_export.scm
 cargo test --test service_stream
 ```
+
+## UPower
+
+```sh
+target/debug/hearth-service upower --once | guile -L scheme scheme/services.scm --once
+target/debug/hearth-service upower | guile -L scheme scheme/services.scm
+```
+
+UPower is sampled every five seconds through zbus. Each observation runs in a
+probe process with a 2.5-second deadline, so a stalled bus connection cannot
+trap the publisher. D-Bus method calls also have a 400-millisecond deadline.
+Calls target the daemon’s unique bus owner; querying does not activate an absent
+daemon. The service publishes `hearth-upower` as saved data and a table zone.
+
+An available daemon with no display battery reports `presence: absent`. A
+present display battery carries its kind, charging state, percentage or coarse
+charge level, and remaining times. Zero remaining time means unknown; it does
+not imply full or empty. Raw enum values preserve unknown future states. A
+missing daemon or failed probe reports unavailable with no retained battery data.
+
+The [UPower device contract](https://upower.freedesktop.org/docs/Device.html)
+defines percentage as 0–100 and distinguishes coarse levels. The
+[root interface](https://upower.freedesktop.org/docs/UPower.html) supplies
+`OnBattery` separately from charging state. Power-profile controls and peripheral
+battery enumeration are separate extensions.

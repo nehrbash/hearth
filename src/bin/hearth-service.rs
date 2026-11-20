@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use hearth::services::{HyprlandService, ServiceEnvelope};
+use hearth::services::{HyprlandService, ServiceEnvelope, UpowerService};
 use std::{
     io,
     os::{fd::AsRawFd, unix::net::UnixStream},
@@ -44,7 +44,7 @@ impl Drop for OutputFlags {
         }
     }
 }
-fn emit(envelope: &ServiceEnvelope, stop: &UnixStream) -> Result<bool> {
+fn emit<T: serde::Serialize>(envelope: &ServiceEnvelope<T>, stop: &UnixStream) -> Result<bool> {
     let bytes = envelope.json_line()?;
     let fd = libc::STDOUT_FILENO;
     let mut offset = 0;
@@ -95,13 +95,20 @@ fn emit(envelope: &ServiceEnvelope, stop: &UnixStream) -> Result<bool> {
 }
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["--probe-upower"] {
+        println!("{}", serde_json::to_string(&hearth::upower::inspect()?)?);
+        return Ok(());
+    }
     if args == ["--help"] || args == ["-h"] {
-        println!("Usage: hearth-service hyprland [--once]");
+        println!("Usage: hearth-service (hyprland|upower) [--once]");
         return Ok(());
     }
     anyhow::ensure!(
-        args == ["hyprland"] || args == ["hyprland", "--once"],
-        "Usage: hearth-service hyprland [--once]"
+        args == ["hyprland"]
+            || args == ["hyprland", "--once"]
+            || args == ["upower"]
+            || args == ["upower", "--once"],
+        "Usage: hearth-service (hyprland|upower) [--once]"
     );
     let shutdown = Shutdown::new()?;
     let fd = io::stdout().as_raw_fd();
@@ -111,7 +118,14 @@ fn run() -> Result<()> {
         "Cannot configure service output"
     );
     let _output_flags = OutputFlags { fd, flags };
-    if args.len() == 2 {
+    if args[0] == "upower" {
+        let mut service = UpowerService::new(std::env::current_exe()?);
+        while let Some(envelope) = service.next(shutdown.read.as_raw_fd())? {
+            if !emit(&envelope, &shutdown.read)? || args.len() == 2 {
+                break;
+            }
+        }
+    } else if args.len() == 2 {
         emit(&HyprlandService::inspect_once(), &shutdown.read)?;
     } else {
         let mut service = HyprlandService::new();

@@ -171,5 +171,5 @@ widgets; two PNGs verify a signal-driven update without manual invalidation.
 
 ## Host services
 
-The [service adapter](docs/services.md) publishes read-only Hyprland monitor and
-workspace state to Weft, independently of the frame loop.
+The [service adapter](docs/services.md) publishes read-only Hyprland monitor/workspace
+state and UPower battery state to Weft, independently of the frame loop.
