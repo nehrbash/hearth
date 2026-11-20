@@ -1,11 +1,11 @@
 use crate::{
     panel::{Panel, color},
-    scene::{Bounds, Scene, rect},
+    scene::{Bounds, ImageAsset, Node, Scene, rect},
     text::Label,
     workspaces::WorkspaceSnapshot,
 };
 use anyhow::{Context, Result, ensure};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::OnceLock};
 
 pub struct WorkspaceSlot {
     pub id: i64,
@@ -30,7 +30,7 @@ pub fn build(
 ) -> Result<WorkspacePanel> {
     snapshot.validate()?;
     ensure!(
-        (64..=512).contains(&width) && height >= 240 && (1..=32).contains(&shown),
+        (60..=512).contains(&width) && height >= 240 && (1..=32).contains(&shown),
         "Invalid workspace bar dimensions or slot count"
     );
     let monitor = snapshot
@@ -59,22 +59,38 @@ pub fn build(
         }
     }
     ids.extend(extra);
+    let art = artwork()?;
     let w = width as f32;
     let h = height as f32;
-    let stride = ((h - 100.0) / ids.len() as f32).min(96.0);
+    let x = w / 2.0 - 18.0;
+    let required = 167.0
+        + ids
+            .iter()
+            .map(|id| {
+                let occupied = snapshot
+                    .workspaces
+                    .iter()
+                    .any(|ws| ws.id == *id && ws.windows > 0);
+                (if *id < 0 { 40.0 } else { 60.0 }) + if occupied { 25.0 } else { 12.0 }
+            })
+            .sum::<f32>();
     ensure!(
-        stride >= 36.0,
+        required <= h - 24.0,
         "Workspace bar is too short to show every workspace; enlarge its height"
     );
-    let mut nodes = vec![rect(0.0, 0.0, w, h, color([17, 23, 32]))];
-    let ink = [226, 232, 240, 255];
-    let muted = [147, 161, 180, 255];
-    let mut labels = vec![
-        Label::new("Hearth", [8.0, 10.0, w - 16.0, 25.0], 14.0, ink).bold(),
-        Label::new(monitor_name, [8.0, 37.0, w - 16.0, 20.0], 10.0, muted),
+    let mut nodes = vec![
+        rect(0.0, 0.0, w, h, color([15, 11, 8])),
+        image(&art.trunk, Bounds::new(0.0, 0.0, w, h)),
     ];
+    nodes.push(Node::Image {
+        bounds: Bounds::new(w / 2.0 - 15.3, 30.0, 34.6, 53.04),
+        image: art.companions.clone(),
+        source: Bounds::new(0.0, 140.0, 313.5, 480.0),
+        opacity: 1.0,
+    });
     let mut slots = Vec::new();
-    for (index, id) in ids.into_iter().enumerate() {
+    let mut y = 167.0;
+    for id in ids {
         let workspace = snapshot.workspaces.iter().find(|ws| ws.id == id);
         let active = monitor.active_workspace == id || monitor.special_workspace == Some(id);
         let other_monitor = snapshot.monitors.iter().any(|m| {
@@ -84,81 +100,119 @@ pub fn build(
             .map(|ws| ws.windows > 0)
             .or_else(|| (!active_ids.contains(&id)).then_some(false));
         let name = workspace.map_or_else(|| id.to_string(), |ws| ws.name.clone());
-        let bounds = Bounds::new(8.0, 68.0 + index as f32 * stride, w - 16.0, stride - 8.0);
-        nodes.push(rect(
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            bounds.height,
-            color(if active {
-                [45, 77, 75]
-            } else if occupied == Some(true) {
-                [37, 47, 62]
-            } else {
-                [24, 31, 42]
-            }),
-        ));
-        if active {
-            nodes.push(rect(
-                bounds.x,
-                bounds.y,
-                3.0,
-                bounds.height,
-                color([124, 215, 193]),
+        let card_height = if id < 0 { 40.0 } else { 60.0 };
+        let bounds = Bounds::new(x, y, 40.0, card_height);
+        if id >= 0 {
+            nodes.push(image(
+                if active {
+                    &art.cradle_active
+                } else {
+                    &art.cradle_idle
+                },
+                Bounds::new(x - 8.0, y - 3.0, 56.0, 72.0),
             ));
-            if monitor.focused {
+            let scale = if active { 1.0 } else { 0.94 };
+            let bx = x - 2.0 + (40.0 - 40.0 * scale) / 2.0;
+            let by = y + (60.0 - 60.0 * scale) / 2.0;
+            let cw = art.deck.width() as f32 / 5.0;
+            let ch = art.deck.height() as f32 / 2.0;
+            let index = (id - 1).rem_euclid(10) as u32;
+            nodes.push(rect(
+                bx,
+                by,
+                40.0 * scale,
+                60.0 * scale,
+                color([47, 33, 23]),
+            ));
+            nodes.push(Node::Image {
+                bounds: Bounds::new(bx, by, 40.0 * scale, 60.0 * scale),
+                image: art.deck.clone(),
+                source: Bounds::new((index % 5) as f32 * cw, (index / 5) as f32 * ch, cw, ch),
+                opacity: 1.0,
+            });
+            nodes.push(image(
+                if active {
+                    &art.mount_active
+                } else {
+                    &art.mount_idle
+                },
+                Bounds::new(
+                    bx - 5.0 * scale,
+                    by - 5.0 * scale,
+                    50.0 * scale,
+                    70.0 * scale,
+                ),
+            ));
+            if other_monitor {
                 nodes.push(rect(
-                    w / 2.0 - 6.0,
-                    bounds.y + 3.0,
-                    12.0,
-                    2.0,
-                    color([235, 195, 130]),
+                    bx + 36.0 * scale,
+                    by + 18.0 * scale,
+                    2.0 * scale,
+                    24.0 * scale,
+                    color([217, 195, 145]),
                 ));
             }
-        }
-        if other_monitor {
             nodes.push(rect(
-                w - 11.0,
-                bounds.y,
-                3.0,
-                bounds.height,
-                color([166, 151, 224]),
+                bx + 25.0 * scale,
+                by + 44.0 * scale,
+                11.0 * scale,
+                12.0 * scale,
+                [0.008, 0.006, 0.012, 0.87],
             ));
-        }
-        labels.push(
-            Label::new(
-                &name,
-                [
-                    14.0,
-                    bounds.y + 10.0,
-                    w - 28.0,
-                    (bounds.height - 13.0).min(22.0),
-                ],
-                if name == id.to_string() { 14.0 } else { 12.0 },
-                ink,
-            )
-            .ellipsis(),
-        );
-        if bounds.height >= 54.0 {
-            let detail = match workspace {
-                Some(ws) => {
-                    let count = format!(
-                        "{} {}",
-                        ws.windows,
-                        if ws.windows == 1 { "window" } else { "windows" }
-                    );
-                    if name != id.to_string() {
-                        format!("{id} · {count}")
+            nodes.push(Node::Text(
+                Label::new(
+                    id.to_string(),
+                    [bx + 27.0 * scale, by + 43.0 * scale, 18.0, 15.0],
+                    10.0 * scale,
+                    if active {
+                        [255, 240, 190, 255]
                     } else {
-                        count
-                    }
-                }
-                None if occupied.is_none() => "state unknown".into(),
-                None => "empty".into(),
-            };
-            labels.push(
-                Label::new(detail, [14.0, bounds.y + 35.0, w - 28.0, 18.0], 10.0, muted).ellipsis(),
-            );
+                        [232, 200, 125, 255]
+                    },
+                )
+                .bold(),
+            ));
+            if active && monitor.focused {
+                nodes.push(image(&art.eye, Bounds::new(x + 5.0, y - 7.0, 30.0, 19.0)));
+            }
+        } else {
+            nodes.push(image(
+                &art.socket,
+                Bounds::new(x + 5.6, y + 5.6, 28.8, 28.8),
+            ));
+            nodes.push(image(
+                if active {
+                    &art.special_active
+                } else {
+                    &art.special_idle
+                },
+                Bounds::new(x, y, 40.0, 40.0),
+            ));
+            let letter = name
+                .trim_start_matches("special:")
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_uppercase()
+                .to_string();
+            nodes.push(Node::Text(Label::new(
+                letter,
+                [x + 12.0, y + 8.0, 24.0, 28.0],
+                20.0,
+                [243, 231, 201, 255],
+            )));
+        }
+        if occupied == Some(true) {
+            nodes.push(image(
+                &art.socket,
+                Bounds::new(x + 9.0, y + card_height - 9.9, 22.0, 22.0),
+            ));
+            nodes.push(Node::Text(Label::new(
+                workspace.map_or(0, |ws| ws.windows).to_string(),
+                [x + 16.0, y + card_height - 5.0, 18.0, 16.0],
+                10.0,
+                [243, 231, 201, 255],
+            )));
         }
         slots.push(WorkspaceSlot {
             id,
@@ -168,20 +222,70 @@ pub fn build(
             occupied,
             other_monitor,
         });
+        y += card_height + if occupied == Some(true) { 25.0 } else { 12.0 };
     }
-    labels.push(Label::new(
-        "Read-only",
-        [8.0, h - 25.0, w - 16.0, 18.0],
-        10.0,
-        muted,
-    ));
     Ok(WorkspacePanel {
         panel: Panel {
             scene: Scene::new(nodes)?,
-            labels,
+            labels: Vec::new(),
         },
         slots,
     })
+}
+
+struct Artwork {
+    trunk: ImageAsset,
+    deck: ImageAsset,
+    companions: ImageAsset,
+    cradle_idle: ImageAsset,
+    cradle_active: ImageAsset,
+    mount_idle: ImageAsset,
+    mount_active: ImageAsset,
+    eye: ImageAsset,
+    socket: ImageAsset,
+    special_idle: ImageAsset,
+    special_active: ImageAsset,
+}
+fn artwork() -> Result<&'static Artwork> {
+    static ART: OnceLock<Result<Artwork, String>> = OnceLock::new();
+    ART.get_or_init(|| load_artwork().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!(error.clone()))
+}
+fn load_artwork() -> Result<Artwork> {
+    Ok(Artwork {
+        trunk: ImageAsset::from_png(include_bytes!("../assets/woodland/trunk-60x1440.png"))?,
+        deck: ImageAsset::from_png(include_bytes!("../assets/woodland/deck.png"))?,
+        companions: ImageAsset::from_png(include_bytes!("../assets/woodland/companions.png"))?,
+        cradle_idle: ImageAsset::from_png(include_bytes!(
+            "../assets/woodland/BranchCradle-idle.png"
+        ))?,
+        cradle_active: ImageAsset::from_png(include_bytes!(
+            "../assets/woodland/BranchCradle-selected.png"
+        ))?,
+        mount_idle: ImageAsset::from_png(include_bytes!(
+            "../assets/woodland/BranchMount-idle.png"
+        ))?,
+        mount_active: ImageAsset::from_png(include_bytes!(
+            "../assets/woodland/BranchMount-selected.png"
+        ))?,
+        eye: ImageAsset::from_png(include_bytes!("../assets/woodland/focused-eye.png"))?,
+        special_idle: ImageAsset::from_png(include_bytes!(
+            "../assets/woodland/special-seal-idle.png"
+        ))?,
+        special_active: ImageAsset::from_png(include_bytes!(
+            "../assets/woodland/special-seal-active.png"
+        ))?,
+        socket: ImageAsset::from_png(include_bytes!("../assets/woodland/socket.png"))?,
+    })
+}
+fn image(asset: &ImageAsset, bounds: Bounds) -> Node {
+    Node::Image {
+        bounds,
+        image: asset.clone(),
+        source: Bounds::new(0.0, 0.0, asset.width() as f32, asset.height() as f32),
+        opacity: 1.0,
+    }
 }
 
 #[cfg(test)]

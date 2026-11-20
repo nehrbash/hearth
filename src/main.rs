@@ -132,8 +132,8 @@ fn main() -> Result<()> {
         options.workspace_snapshot = Some(state);
     }
     if workspace_mode {
-        options.width = 120;
-        options.height = 1000;
+        options.width = 60;
+        options.height = 1440;
         if snapshot.is_some() && options.workspaces {
             options.workspace_snapshot =
                 Some(Instance::discover(options.hyprland_instance.as_deref())?.snapshot()?);

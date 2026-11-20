@@ -19,6 +19,10 @@ pub struct Layer {
 
 impl Layer {
     pub fn new(gpu: &Gpu, size: [u32; 2]) -> Result<Self> {
+        Self::with_mip_levels(gpu, size, 1)
+    }
+
+    fn with_mip_levels(gpu: &Gpu, size: [u32; 2], levels: u32) -> Result<Self> {
         let maximum = gpu.device.limits().max_texture_dimension_2d;
         ensure!(
             size.iter().all(|value| *value > 0 && *value <= maximum),
@@ -31,7 +35,7 @@ impl Layer {
                 height: size[1],
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: LAYER_FORMAT,
@@ -80,12 +84,14 @@ impl Layer {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderUniforms {
+    pub crop: [f32; 4],
     pub viewport: [f32; 4],
     pub parameters: [f32; 4],
 }
 
 const HEADER: &str = r#"
 struct Uniforms {
+    crop: vec4<f32>,
     viewport: vec4<f32>,
     parameters: vec4<f32>,
 }
@@ -206,6 +212,7 @@ impl Shader {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Effect uniforms"),
                 contents: bytemuck::bytes_of(&ShaderUniforms {
+                    crop: [0.0; 4],
                     viewport: [0.0; 4],
                     parameters: [0.0; 4],
                 }),
@@ -215,6 +222,7 @@ impl Shader {
             label: Some("Effect sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         Ok(Self {
@@ -361,6 +369,7 @@ impl EffectRenderer {
             "Effect time must be finite and nonnegative"
         );
         let mut uniforms = ShaderUniforms {
+            crop: [0.0; 4],
             viewport: [size[0] as f32, size[1] as f32, time, (time / 8.0).fract()],
             parameters: [0.0, 0.0, 2.5, 40.0],
         };
@@ -457,6 +466,7 @@ impl NodeSurface {
         size: [u32; 2],
         key: Option<crate::scene::ShaderKind>,
         art: std::sync::Arc<std::sync::OnceLock<Layer>>,
+        images: ImageCache,
     ) -> Result<Self> {
         use crate::scene::ShaderKind;
         let fragment = match &key {
@@ -477,6 +487,7 @@ impl NodeSurface {
         let child = if key.is_none() {
             let mut renderer = Renderer::new(gpu, LAYER_FORMAT);
             renderer.moon_art = art.clone();
+            renderer.images = images;
             Some(Box::new(renderer))
         } else {
             None
@@ -521,6 +532,7 @@ impl NodeSurface {
     ) -> Result<()> {
         use crate::scene::{LayerEffect, Node};
         let mut uniforms = ShaderUniforms {
+            crop: [0.0; 4],
             viewport: [
                 self.source.size[0] as f32,
                 self.source.size[1] as f32,
@@ -589,10 +601,134 @@ impl NodeSurface {
             target,
             output,
             ShaderUniforms {
+                crop: [0.0; 4],
                 viewport: [size[0] as f32, size[1] as f32, 0.0, 0.0],
                 parameters: [bounds.x, bounds.y, bounds.width, bounds.height],
             },
             Some(clip),
+        )
+    }
+}
+
+pub(crate) type ImageCache =
+    std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<u64, Layer>>>;
+
+pub(crate) struct ImageRenderer {
+    composite: Shader,
+    premultiply: Shader,
+    downsample: Shader,
+}
+impl ImageRenderer {
+    pub(crate) fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self> {
+        Ok(Self {
+            composite: Shader::pipeline(
+                gpu,
+                format,
+                include_str!("../shaders/image.wgsl"),
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            )?,
+            downsample: Shader::new(
+                gpu,
+                LAYER_FORMAT,
+                "@fragment fn fragment(in: VertexOut) -> @location(0) vec4<f32> { return textureSampleLevel(source, source_sampler, in.uv, 0.0); }",
+            )?,
+            premultiply: Shader::new(
+                gpu,
+                LAYER_FORMAT,
+                "@fragment fn fragment(in: VertexOut) -> @location(0) vec4<f32> { let art = textureSampleLevel(source, source_sampler, in.uv, 0.0); return vec4(art.rgb * art.a, art.a); }",
+            )?,
+        })
+    }
+    pub(crate) fn prepare(
+        &self,
+        gpu: &Gpu,
+        image: &crate::scene::ImageAsset,
+        cache: &ImageCache,
+    ) -> Result<()> {
+        if cache.borrow().contains_key(&image.id()) {
+            return Ok(());
+        }
+        let size = [image.width(), image.height()];
+        let source = Layer::new(gpu, size)?;
+        gpu.queue.write_texture(
+            source.texture.as_image_copy(),
+            image.rgba(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size[0] * 4),
+                rows_per_image: Some(size[1]),
+            },
+            source.texture.size(),
+        );
+        let levels = size[0].max(size[1]).ilog2() + 1;
+        let target = Layer::with_mip_levels(gpu, size, levels)?;
+        let level_view = |level| {
+            target.texture.create_view(&wgpu::TextureViewDescriptor {
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        };
+        self.premultiply.render(
+            gpu,
+            &level_view(0),
+            &source.view,
+            ShaderUniforms {
+                crop: [0.0; 4],
+                viewport: [size[0] as f32, size[1] as f32, 0.0, 0.0],
+                parameters: [0.0; 4],
+            },
+        )?;
+        for level in 1..levels {
+            self.downsample.render(
+                gpu,
+                &level_view(level),
+                &level_view(level - 1),
+                ShaderUniforms {
+                    crop: [0.0; 4],
+                    viewport: [
+                        (size[0] >> level).max(1) as f32,
+                        (size[1] >> level).max(1) as f32,
+                        0.0,
+                        0.0,
+                    ],
+                    parameters: [0.0; 4],
+                },
+            )?;
+        }
+        cache.borrow_mut().insert(image.id(), target);
+        Ok(())
+    }
+    pub(crate) fn draw(
+        &self,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        size: [u32; 2],
+        operation: &crate::scene::PaintOp,
+        cache: &ImageCache,
+    ) -> Result<()> {
+        let crate::scene::PaintOp::Image {
+            bounds,
+            clip,
+            image,
+            source,
+            opacity,
+        } = operation
+        else {
+            anyhow::bail!("Expected image operation")
+        };
+        let cache = cache.borrow();
+        let image = cache.get(&image.id()).context("Image not prepared")?;
+        self.composite.pass(
+            gpu,
+            target,
+            &image.view,
+            ShaderUniforms {
+                crop: [source.x, source.y, source.width, source.height],
+                viewport: [size[0] as f32, size[1] as f32, *opacity, 0.0],
+                parameters: [bounds.x, bounds.y, bounds.width, bounds.height],
+            },
+            Some(*clip),
         )
     }
 }

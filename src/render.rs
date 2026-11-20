@@ -30,6 +30,8 @@ pub struct Renderer {
     text: Option<crate::text::TextSystem>,
     format: wgpu::TextureFormat,
     surfaces: Vec<crate::effects::NodeSurface>,
+    pub(crate) images: crate::effects::ImageCache,
+    image_renderer: Option<crate::effects::ImageRenderer>,
     pub(crate) moon_art: std::sync::Arc<std::sync::OnceLock<crate::effects::Layer>>,
 }
 
@@ -74,6 +76,8 @@ impl Renderer {
             text: None,
             format,
             surfaces: Vec::new(),
+            images: Default::default(),
+            image_renderer: None,
             moon_art: Default::default(),
         }
     }
@@ -85,12 +89,24 @@ impl Renderer {
         scene: &Scene,
         size: [u32; 2],
     ) -> Result<()> {
+        let ids = scene.image_ids();
+        self.images.borrow_mut().retain(|id, _| ids.contains(id));
         self.draw_with_clear(gpu, view, scene, size, BACKGROUND)
     }
 
     pub(crate) fn prepare(&mut self, gpu: &Gpu, scene: &Scene, size: [u32; 2]) -> Result<()> {
         let mut index = 0;
         for operation in scene.paint_ops(Bounds::new(0.0, 0.0, size[0] as f32, size[1] as f32)) {
+            if let PaintOp::Image { image, .. } = &operation {
+                if self.image_renderer.is_none() {
+                    self.image_renderer =
+                        Some(crate::effects::ImageRenderer::new(gpu, self.format)?);
+                }
+                self.image_renderer
+                    .as_ref()
+                    .context("Image renderer missing")?
+                    .prepare(gpu, image, &self.images)?;
+            }
             if let PaintOp::Surface { bounds, node, .. } = operation {
                 let dimensions = [bounds.width.ceil() as u32, bounds.height.ceil() as u32];
                 let key = match &node {
@@ -108,6 +124,7 @@ impl Renderer {
                         dimensions,
                         key,
                         self.moon_art.clone(),
+                        self.images.clone(),
                     )?;
                     if index == self.surfaces.len() {
                         self.surfaces.push(surface);
@@ -141,6 +158,14 @@ impl Renderer {
         self.draw_quads(gpu, view, &[], size, wgpu::LoadOp::Clear(clear));
         let mut remaining = operations.as_slice();
         while let Some(first) = remaining.first() {
+            if matches!(first, PaintOp::Image { .. }) {
+                self.image_renderer
+                    .as_ref()
+                    .context("Image renderer missing")?
+                    .draw(gpu, view, size, first, &self.images)?;
+                remaining = &remaining[1..];
+                continue;
+            }
             if let PaintOp::Surface { bounds, clip, node } = first {
                 self.surfaces[surface_index].draw(gpu, view, size, *bounds, *clip, node)?;
                 surface_index += 1;
@@ -151,7 +176,7 @@ impl Renderer {
             let count = remaining
                 .iter()
                 .take_while(|op| {
-                    !matches!(op, PaintOp::Surface { .. })
+                    !matches!(op, PaintOp::Surface { .. } | PaintOp::Image { .. })
                         && matches!(op, PaintOp::Text(_)) == text_run
                 })
                 .count();

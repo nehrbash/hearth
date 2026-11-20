@@ -138,14 +138,17 @@ cargo run -- --workspace-state fixtures/workspaces.json --monitor DP-1 --snapsho
 The read-only vertical bar follows Hyprland workspace events on a worker thread.
 It shows fixed slots 1–7, occupancy, the active workspace on its actual output,
 other-monitor markers, and additional named/special workspaces. Empty input
-regions pass pointer events through; the bar reserves no desktop space.
+regions pass pointer events through. A 60-pixel exclusive zone reserves its full
+height at the right edge, alongside Burl’s existing left bar.
 
 Compositor discovery matches the current Wayland display. An ambiguous match
 requires `--hyprland-instance SIGNATURE`. Snapshot requests are bounded; a lost
 connection is shown explicitly while reconnecting to the same instance. Monitor
 selection is available for headless snapshots; native placement determines its
-monitor. This implements the workspace indicator's state semantics; Burl's tarot
-art, app seals, popouts and workspace dispatch remain separate widget work.
+monitor. The workspace strip uses Burl’s tarot atlas, graded bark and branch ornaments.
+Occupied sockets show window counts; application-specific icons and popout
+behavior remain separate integrations. Asset provenance and QML capture recipes
+are in [woodland assets](assets/woodland/README.md).
 
 ## Scheme scenes and reactive widgets
 

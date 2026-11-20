@@ -160,17 +160,27 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         Some("hearth"),
         None,
     );
-    layer.set_size(options.width, options.height);
-    layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
-    layer.set_margin(40, 40, 0, 0);
+    if workspace_mode {
+        layer.set_size(options.width, 0);
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::RIGHT);
+        layer.set_margin(0, 0, 0, 0);
+        layer.set_exclusive_zone(options.width as i32);
+    } else {
+        layer.set_size(options.width, options.height);
+        layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
+        layer.set_margin(40, 40, 0, 0);
+        layer.set_exclusive_zone(0);
+    }
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_exclusive_zone(0);
     if workspace_mode {
         let region = Region::new(&compositor)?;
         layer
             .wl_surface()
             .set_input_region(Some(region.wl_region()));
-        eprintln!("workspace_input_region=empty exclusive_zone=0");
+        eprintln!(
+            "workspace_input_region=empty exclusive_zone={}",
+            options.width
+        );
     }
     layer.commit();
     let instance = Gpu::instance();
@@ -432,15 +442,18 @@ impl App {
             }
         };
         if let Some(error) = error {
-            if let Some(title) = panel.labels.first_mut() {
-                title.text = "Stale".into();
-                title.color = [235, 195, 130, 255];
-            }
-            if let Some(footer) = panel.labels.last_mut() {
-                footer.text = format!("Unavailable: {error}");
-                footer.color = [235, 195, 130, 255];
-                *footer = footer.clone().ellipsis();
-            }
+            eprintln!("workspace state stale: {error}");
+            panel.labels.push(Label::new(
+                "Offline",
+                [
+                    4.0,
+                    self.config.height as f32 - 26.0,
+                    self.config.width as f32 - 8.0,
+                    24.0,
+                ],
+                11.0,
+                [235, 195, 130, 255],
+            ));
         }
         Ok(panel)
     }

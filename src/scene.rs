@@ -1,3 +1,72 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_IMAGE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug)]
+pub struct ImageAsset(Arc<ImagePixels>);
+
+#[derive(Debug)]
+struct ImagePixels {
+    id: u64,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl PartialEq for ImageAsset {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+impl ImageAsset {
+    pub fn from_png(bytes: &[u8]) -> anyhow::Result<Self> {
+        anyhow::ensure!(bytes.len() <= 16 * 1024 * 1024, "Image PNG exceeds 16 MiB");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info()?;
+        let info = reader.info();
+        anyhow::ensure!(
+            info.width > 0
+                && info.height > 0
+                && info.width <= 4096
+                && info.height <= 4096
+                && u64::from(info.width) * u64::from(info.height) <= 4 * 1024 * 1024,
+            "Image exceeds pixel budget"
+        );
+        anyhow::ensure!(
+            info.color_type == png::ColorType::Rgba && info.bit_depth == png::BitDepth::Eight,
+            "Image must be RGBA8"
+        );
+        let mut rgba = vec![
+            0;
+            reader
+                .output_buffer_size()
+                .ok_or_else(|| anyhow::anyhow!("Image exceeds decoder limits"))?
+        ];
+        let frame = reader.next_frame(&mut rgba)?;
+        rgba.truncate(frame.buffer_size());
+        Ok(Self(Arc::new(ImagePixels {
+            id: NEXT_IMAGE.fetch_add(1, Ordering::Relaxed),
+            width: frame.width,
+            height: frame.height,
+            rgba,
+        })))
+    }
+    pub fn width(&self) -> u32 {
+        self.0.width
+    }
+    pub fn height(&self) -> u32 {
+        self.0.height
+    }
+    pub(crate) fn id(&self) -> u64 {
+        self.0.id
+    }
+    pub(crate) fn rgba(&self) -> &[u8] {
+        &self.0.rgba
+    }
+}
+
 use crate::text::Label;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +134,12 @@ pub enum LayerEffect {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
+    Image {
+        bounds: Bounds,
+        image: ImageAsset,
+        source: Bounds,
+        opacity: f32,
+    },
     Shader {
         bounds: Bounds,
         kind: ShaderKind,
@@ -100,6 +175,13 @@ pub struct Quad {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaintOp {
+    Image {
+        bounds: Bounds,
+        clip: Bounds,
+        image: ImageAsset,
+        source: Bounds,
+        opacity: f32,
+    },
     Surface {
         bounds: Bounds,
         clip: Bounds,
@@ -136,6 +218,34 @@ impl Scene {
             anyhow::ensure!(*count <= 4096, "Scene exceeds 4096 nodes");
             for node in nodes {
                 match node {
+                    Node::Image {
+                        bounds,
+                        image,
+                        source,
+                        opacity,
+                    } => {
+                        anyhow::ensure!(
+                            bounds.valid()
+                                && bounds.translated(offset).valid()
+                                && bounds.width > 0.0
+                                && bounds.height > 0.0,
+                            "Invalid image bounds"
+                        );
+                        anyhow::ensure!(
+                            source.valid()
+                                && source.x >= 0.0
+                                && source.y >= 0.0
+                                && source.width > 0.0
+                                && source.height > 0.0
+                                && source.x + source.width <= image.width() as f32
+                                && source.y + source.height <= image.height() as f32,
+                            "Image crop exceeds source"
+                        );
+                        anyhow::ensure!(
+                            opacity.is_finite() && (0.0..=1.0).contains(opacity),
+                            "Invalid image opacity"
+                        );
+                    }
                     Node::Shader {
                         bounds,
                         kind,
@@ -206,12 +316,53 @@ impl Scene {
             Ok(())
         }
         validate(&roots, 0, &mut 0, [0.0; 2], &mut (0, 0))?;
+        fn images(nodes: &[Node], seen: &mut std::collections::BTreeMap<u64, u64>) {
+            for node in nodes {
+                match node {
+                    Node::Image { image, .. } => {
+                        seen.insert(
+                            image.id(),
+                            u64::from(image.width()) * u64::from(image.height()),
+                        );
+                    }
+                    Node::Group { children, .. }
+                    | Node::Clip { children, .. }
+                    | Node::Layer { children, .. } => images(children, seen),
+                    _ => {}
+                }
+            }
+        }
+        let mut assets = std::collections::BTreeMap::new();
+        images(&roots, &mut assets);
+        anyhow::ensure!(
+            assets.len() <= 128 && assets.values().sum::<u64>() <= 16 * 1024 * 1024,
+            "Scene exceeds image asset budget"
+        );
         let changed = self.roots != roots;
         if changed {
             self.roots = roots;
             self.dirty = true;
         }
         Ok(changed)
+    }
+
+    pub(crate) fn image_ids(&self) -> std::collections::BTreeSet<u64> {
+        fn visit(nodes: &[Node], ids: &mut std::collections::BTreeSet<u64>) {
+            for node in nodes {
+                match node {
+                    Node::Image { image, .. } => {
+                        ids.insert(image.id());
+                    }
+                    Node::Group { children, .. }
+                    | Node::Clip { children, .. }
+                    | Node::Layer { children, .. } => visit(children, ids),
+                    _ => {}
+                }
+            }
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        visit(&self.roots, &mut ids);
+        ids
     }
 
     pub fn take_damage(&mut self) -> bool {
@@ -232,6 +383,23 @@ impl Scene {
         fn visit(nodes: &[Node], offset: [f32; 2], clip: Bounds, out: &mut Vec<PaintOp>) {
             for node in nodes {
                 match node {
+                    Node::Image {
+                        bounds,
+                        image,
+                        source,
+                        opacity,
+                    } => {
+                        let bounds = bounds.translated(offset);
+                        if let Some(clip) = bounds.intersection(clip) {
+                            out.push(PaintOp::Image {
+                                bounds,
+                                clip,
+                                image: image.clone(),
+                                source: *source,
+                                opacity: *opacity,
+                            });
+                        }
+                    }
                     Node::Shader { bounds, .. } | Node::Layer { bounds, .. } => {
                         let bounds = bounds.translated(offset);
                         if let Some(clip) = bounds.intersection(clip) {
@@ -359,6 +527,45 @@ pub fn demo() -> anyhow::Result<Scene> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_validation_is_atomic_and_clones_share_identity() -> anyhow::Result<()> {
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()?
+                .write_image_data(&[255, 0, 0, 128, 0, 0, 0, 0])?;
+        }
+        let image = ImageAsset::from_png(&png)?;
+        assert_eq!(image, image.clone());
+        assert!(ImageAsset::from_png(b"not a PNG").is_err());
+        let valid = Node::Image {
+            bounds: Bounds::new(0.0, 0.0, 20.0, 10.0),
+            image: image.clone(),
+            source: Bounds::new(0.0, 0.0, 2.0, 1.0),
+            opacity: 1.0,
+        };
+        let mut scene = Scene::new(vec![valid.clone()])?;
+        scene.take_damage();
+        let before = scene.paint_ops(Bounds::new(0.0, 0.0, 100.0, 100.0));
+        let mut invalid = valid.clone();
+        if let Node::Image { source, .. } = &mut invalid {
+            source.width = 3.0;
+        }
+        assert!(scene.replace(vec![invalid]).is_err());
+        let mut invalid = valid.clone();
+        if let Node::Image { opacity, .. } = &mut invalid {
+            *opacity = f32::NAN;
+        }
+        assert!(scene.replace(vec![invalid]).is_err());
+        assert_eq!(before, scene.paint_ops(Bounds::new(0.0, 0.0, 100.0, 100.0)));
+        assert!(!scene.take_damage());
+        assert!(!scene.replace(vec![valid])?);
+        Ok(())
+    }
 
     #[test]
     fn offscreen_budgets_and_uniforms_are_validated_atomically() -> anyhow::Result<()> {
