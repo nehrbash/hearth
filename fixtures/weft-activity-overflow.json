@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "kind": "snapshot",
+  "workspace": "isolated",
+  "generation": "fixture-1",
+  "revision": 1,
+  "zones": [
+    {
+      "name": "status",
+      "type": "text",
+      "display": "Workspace ready",
+      "rows": []
+    },
+    {
+      "name": "checks",
+      "type": "metric",
+      "display": "42",
+      "rows": []
+    },
+    {
+      "name": "milestones",
+      "type": "table",
+      "display": "",
+      "rows": [
+        [
+          "Milestone",
+          "State"
+        ],
+        [
+          "Runtime",
+          "Ready"
+        ],
+        [
+          "Zones",
+          "Connected"
+        ]
+      ]
+    },
+    {
+      "name": "flow",
+      "type": "wiring",
+      "display": "",
+      "rows": [
+        [
+          "Weft",
+          "Snapshot"
+        ],
+        [
+          "Snapshot",
+          "Hearth"
+        ]
+      ]
+    }
+  ],
+  "activity": {
+    "generation": "trusted-fixture",
+    "sessions": [
+      {
+        "id": "codex:session-0-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "active",
+        "host": {
+          "buffer": "hearth-worker-0-long-buffer-name",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/20"
+        },
+        "delivery": "codex-send"
+      },
+      {
+        "id": "codex:session-1-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "active",
+        "host": {
+          "buffer": "hearth-worker-1-long-buffer-name",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/21"
+        },
+        "delivery": "codex-send"
+      },
+      {
+        "id": "codex:session-2-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "active",
+        "host": {
+          "buffer": "hearth-worker-2-long-buffer-name",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/22"
+        },
+        "delivery": "codex-send"
+      },
+      {
+        "id": "codex:session-3-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "active",
+        "host": null,
+        "delivery": "codex-send"
+      },
+      {
+        "id": "codex:session-4-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "idle",
+        "host": {
+          "buffer": "hearth-worker-4-long-buffer-name",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/24"
+        },
+        "delivery": "codex-send"
+      },
+      {
+        "id": "codex:session-5-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "idle",
+        "host": {
+          "buffer": "hearth-worker-5-long-buffer-name",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/25"
+        },
+        "delivery": "codex-send"
+      },
+      {
+        "id": "codex:session-6-abcdefghijklmnopqrstuvwxy",
+        "provider": "codex",
+        "status": "idle",
+        "host": {
+          "buffer": "hearth-worker-6-long-buffer-name",
+          "mode": "eat-mode",
+          "tty": "/dev/pts/26"
+        },
+        "delivery": "codex-send"
+      }
+    ],
+    "watches": [
+      {
+        "subscriber": "worker-0",
+        "target": {
+          "kind": "session",
+          "value": "codex:session-0-abcdefghijklmnopqrstuvwxy"
+        },
+        "delivery": "codex:owner-abcdefghijklmnopqrstuvwxy-0123456789"
+      },
+      {
+        "subscriber": "worker-1",
+        "target": {
+          "kind": "session",
+          "value": "codex:session-1-abcdefghijklmnopqrstuvwxy"
+        },
+        "delivery": "codex:owner-abcdefghijklmnopqrstuvwxy-0123456789"
+      },
+      {
+        "subscriber": "worker-2",
+        "target": {
+          "kind": "session",
+          "value": "codex:session-2-abcdefghijklmnopqrstuvwxy"
+        },
+        "delivery": "codex:owner-abcdefghijklmnopqrstuvwxy-0123456789"
+      },
+      {
+        "subscriber": "worker-3",
+        "target": {
+          "kind": "session",
+          "value": "codex:session-3-abcdefghijklmnopqrstuvwxy"
+        },
+        "delivery": "codex:owner-abcdefghijklmnopqrstuvwxy-0123456789"
+      }
+    ],
+    "notices": [
+      {
+        "id": 30,
+        "subscriber": "worker-0",
+        "kind": "turn-finished",
+        "source": "codex:session-0-abcdefghijklmnopqrstuvwxy",
+        "text": "The workspace snapshot is ready for inspection. "
+      },
+      {
+        "id": 31,
+        "subscriber": "worker-1",
+        "kind": "turn-finished",
+        "source": "codex:session-1-abcdefghijklmnopqrstuvwxy",
+        "text": "The workspace snapshot is ready for inspection. "
+      },
+      {
+        "id": 32,
+        "subscriber": "worker-2",
+        "kind": "turn-finished",
+        "source": "codex:session-2-abcdefghijklmnopqrstuvwxy",
+        "text": "The workspace snapshot is ready for inspection. "
+      },
+      {
+        "id": 33,
+        "subscriber": "worker-3",
+        "kind": "turn-finished",
+        "source": "codex:session-3-abcdefghijklmnopqrstuvwxy",
+        "text": "The workspace snapshot is ready for inspection. "
+      },
+      {
+        "id": 34,
+        "subscriber": "worker-0",
+        "kind": "turn-finished",
+        "source": "codex:session-4-abcdefghijklmnopqrstuvwxy",
+        "text": "The workspace snapshot is ready for inspection. Long notice context that should be elided at the available pixel width. Long notice context that should be elided at the available pixel width. Long notice context that should be elided at the available pixel width. "
+      }
+    ],
+    "leases": [
+      {
+        "buffer": "hearth-terminal-0",
+        "holder": "codex:worker-0",
+        "expires_at_ms": null
+      },
+      {
+        "buffer": "hearth-terminal-1",
+        "holder": "codex:worker-1",
+        "expires_at_ms": null
+      },
+      {
+        "buffer": "hearth-terminal-2",
+        "holder": "codex:worker-2",
+        "expires_at_ms": null
+      },
+      {
+        "buffer": "hearth-terminal-3",
+        "holder": "codex:worker-3",
+        "expires_at_ms": null
+      }
+    ],
+    "effects": [],
+    "effects_generation": "fixture-1",
+    "warnings": [
+      "Process 123: inspection failed — In procedure readlink: Permission denied",
+      "Codex registry: discovery failed — Permission denied",
+      "Emacs session hosts unavailable: Connection refused",
+      "Owner effects unavailable: Inspection timed out"
+    ],
+    "notice_history_limit": 128,
+    "notice_scope": "current-watch-subscribers"
+  }
+}

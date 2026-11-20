@@ -10,14 +10,14 @@ const INK: [u8; 4] = [226, 232, 240, 255];
 const MUTED: [u8; 4] = [147, 161, 180, 255];
 const ACCENT: [u8; 4] = [124, 215, 193, 255];
 
-fn short(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        text.to_owned()
-    } else {
-        text.chars()
-            .take(limit.saturating_sub(1))
-            .chain(['…'])
-            .collect()
+fn more(labels: &mut Vec<Label>, count: usize, shown: usize, bounds: [f32; 4]) {
+    if count > shown {
+        labels.push(Label::new(
+            format!("+{} more", count - shown),
+            bounds,
+            11.0,
+            MUTED,
+        ));
     }
 }
 
@@ -86,12 +86,7 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
     );
     for (index, session) in activity.sessions.iter().take(4).enumerate() {
         let y = 164.0 + index as f32 * 39.0;
-        labels.push(Label::new(
-            short(&session.id, 35),
-            [46.0, y, 300.0, 23.0],
-            12.0,
-            INK,
-        ));
+        labels.push(Label::new(&session.id, [46.0, y, 300.0, 23.0], 12.0, INK));
         labels.push(Label::new(
             &session.status,
             [350.0, y, 95.0, 23.0],
@@ -103,12 +98,7 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             .as_ref()
             .map(|host| format!("{} · {}", host.buffer, host.mode))
             .unwrap_or_else(|| "host unknown".into());
-        labels.push(Label::new(
-            short(&host, 48),
-            [455.0, y, w - 501.0, 23.0],
-            12.0,
-            INK,
-        ));
+        labels.push(Label::new(host, [455.0, y, w - 501.0, 23.0], 12.0, INK));
         labels.push(Label::new(
             format!(
                 "Delivery: {}",
@@ -119,6 +109,12 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             MUTED,
         ));
     }
+    more(
+        &mut labels,
+        activity.sessions.len(),
+        4,
+        [46.0, 322.0, w - 92.0, 17.0],
+    );
     if activity.sessions.is_empty() {
         labels.push(Label::new(
             "No sessions reported",
@@ -146,10 +142,7 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             crate::activity::WatchTarget::Topic(_) => "topic",
         };
         labels.push(Label::new(
-            short(
-                &format!("{} → {kind}: {}", watch.subscriber, watch.target.value()),
-                50,
-            ),
+            format!("{} → {kind}: {}", watch.subscriber, watch.target.value()),
             [46.0, y, half - 36.0, 21.0],
             12.0,
             INK,
@@ -164,6 +157,12 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             MUTED,
         ));
     }
+    more(
+        &mut labels,
+        activity.watches.len(),
+        3,
+        [46.0, 525.0, half - 36.0, 17.0],
+    );
     if activity.watches.is_empty() {
         labels.push(Label::new(
             "No watches",
@@ -201,6 +200,12 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             MUTED,
         ));
     }
+    more(
+        &mut labels,
+        activity.leases.len(),
+        3,
+        [lx, 525.0, half - 36.0, 17.0],
+    );
     if activity.leases.is_empty() {
         labels.push(Label::new(
             "No held leases reported",
@@ -230,12 +235,18 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             ACCENT,
         ));
         labels.push(Label::new(
-            short(&notice.text, 115),
+            &notice.text,
             [46.0, y + 21.0, w - 92.0, 21.0],
             12.0,
             INK,
         ));
     }
+    more(
+        &mut labels,
+        activity.notices.len(),
+        3,
+        [46.0, 758.0, w - 92.0, 18.0],
+    );
     if activity.notices.is_empty() {
         labels.push(Label::new(
             "No retained notices for current watch subscribers",
@@ -244,29 +255,46 @@ pub fn build(snapshot: &Snapshot, width: u32, height: u32) -> Result<Panel> {
             MUTED,
         ));
     }
-    let warnings = if activity.warnings.is_empty() {
-        "Preview: up to 4 sessions, 3 watches, 3 leases and 3 notices. History is bounded.".into()
+    let diagnostic_capacity = ((h - 30.0 - 798.0) / 18.0).floor() as usize;
+    let shown = activity.warnings.len().min(if diagnostic_capacity <= 1 {
+        1
     } else {
-        format!("Inspection warning: {}", activity.warnings.join("; "))
-    };
-    labels.push(
-        Label::new(
-            warnings,
-            [28.0, 798.0, w - 56.0, 40.0],
+        (diagnostic_capacity - 1).min(2)
+    });
+    let hidden = activity.warnings.len() - shown;
+    for (index, warning) in activity.warnings.iter().take(shown).enumerate() {
+        let prefix = if diagnostic_capacity == 1 && hidden > 0 {
+            format!("Inspection (+{hidden} more): ")
+        } else {
+            "Inspection: ".into()
+        };
+        labels.push(Label::new(
+            format!("{prefix}{warning}"),
+            [28.0, 798.0 + index as f32 * 18.0, w - 56.0, 18.0],
             12.0,
             [235, 195, 130, 255],
-        )
-        .wrap(),
-    );
+        ));
+    }
+    if hidden > 0 && diagnostic_capacity > 1 {
+        labels.push(Label::new(
+            format!("+{hidden} more inspection warnings"),
+            [28.0, 798.0 + shown as f32 * 18.0, w - 56.0, 18.0],
+            11.0,
+            [235, 195, 130, 255],
+        ));
+    }
     labels.push(Label::new(
         format!(
-            "Weft · revision {} · notice history limit {}",
+            "Weft · revision {} · Notices: latest {} · current watch subscribers only",
             snapshot.revision, activity.notice_history_limit
         ),
         [28.0, h - 30.0, w - 56.0, 23.0],
         11.0,
         MUTED,
     ));
+    for label in &mut labels {
+        *label = label.clone().ellipsis();
+    }
     Ok(Panel {
         scene: Scene::new(nodes)?,
         labels,

@@ -5,6 +5,7 @@
   #:use-module (json)
   #:use-module (rnrs bytevectors)
   #:use-module (srfi srfi-1)
+  #:use-module (srfi srfi-13)
   #:export (hearth-activity))
 
 (define query
@@ -12,14 +13,27 @@
               (lambda (thunk)
                 (catch #t
                   (lambda () (list (cons 'ok #t) (cons 'value (thunk))))
-                  (lambda arguments
-                    (list (cons 'ok #f) (cons 'error (object->string arguments))))))))
+                  (lambda (key . arguments)
+                    (list (cons 'ok #f)
+                          (cons 'error
+                            (list (cons 'kind key)
+                                  (cons 'message
+                                    (and (>= (length arguments) 2)
+                                         (string? (cadr arguments)) (cadr arguments)))
+                                  (cons 'arguments
+                                    (if (and (>= (length arguments) 3)
+                                             (list? (caddr arguments)))
+                                        (map (lambda (value)
+                                               (if (or (string? value) (number? value)
+                                                       (symbol? value)) value "[details omitted]"))
+                                             (caddr arguments))
+                                        '()))))))))))
      (let ((watches (capture (lambda () (watch-list)))))
        (list
          (cons 'generation (assq-ref (workspace-state) 'generation))
          (cons 'sessions
            (capture (lambda ()
-                      (session-list #:fields '(id provider status tty delivery)))))
+                      (session-list #:fields '(id provider status pid tty delivery)))))
          (cons 'emacs-sessions
            (capture (lambda ()
                       (map (lambda (row)
@@ -49,7 +63,7 @@
       (lambda () #t)
       (lambda () (set! text (get-string-n port 1048577)))
       (lambda () (set! status (close-pipe port))))
-    (unless (zero? status) (error "Weft activity export failed" status text))
+    (unless (zero? status) (error "Weft activity export failed" status))
     (unless (and (string? text)
                  (<= (bytevector-length (string->utf8 text)) 1048576))
       (error "Weft activity export exceeds 1 MiB"))
@@ -62,8 +76,8 @@
         (unless (eof-object? (read port)) (error "Trailing Weft activity data"))
         value))))
 
-(define (isolated-generation)
-  (let ((reply (read-value (command-output "workspace-eval" "(workspace-state)"))))
+(define (isolated-generation command)
+  (let ((reply (read-value (command "workspace-eval" "(workspace-state)"))))
     (unless (eq? 'ok (assq-ref reply 'status))
       (error "Cannot inspect isolated workspace generation" reply))
     (let ((generation (assq-ref (read-value (assq-ref reply 'value)) 'generation)))
@@ -78,9 +92,65 @@
 (define (nullable-text value)
   (if (or (not value) (eq? value 'null)) 'null (atom-text value)))
 
-(define (hearth-activity)
+(define (one-line value)
+  (if (string? value)
+      (let ((text (string-join (string-tokenize value) " ")))
+        (if (> (string-length text) 512)
+            (string-append (substring text 0 511) "…") text))
+      "Inspection failed"))
+
+(define (error-summary record)
+  (if (string? record) (one-line record)
+      (let ((message (and (list? record) (assq-ref record 'message)))
+            (arguments (and (list? record) (assq-ref record 'arguments))))
+        (if (and (string? message) (list? arguments))
+            (catch #t
+              (lambda () (one-line (apply format #f message arguments)))
+              (lambda _ "Inspection failed"))
+            "Inspection failed"))))
+
+(define (exception-summary key arguments)
+  (error-summary
+    `((kind . ,key)
+      (message . ,(and (>= (length arguments) 2) (cadr arguments)))
+      (arguments . ,(if (and (>= (length arguments) 3) (list? (caddr arguments)))
+                       (map (lambda (value)
+                              (if (or (string? value) (symbol? value) (number? value))
+                                  value "[details omitted]"))
+                            (caddr arguments))
+                       '())))))
+
+(define (relevant-warning? warning sessions)
+  (not (and (list? warning)
+            (eq? 'process (assq-ref warning 'provider))
+            (eq? 'inspect (assq-ref warning 'operation))
+            (let ((target (assq-ref warning 'target)))
+              (and (or (number? target) (and (string? target) (string->number target)))
+                   (not (any (lambda (session)
+                               (let ((pid (assq-ref session 'pid)))
+                                 (and pid (equal? (atom-text pid) (atom-text target)))))
+                             sessions)))))))
+
+(define (warning-summary warning)
+  (if (list? warning)
+      (let ((provider (assq-ref warning 'provider))
+            (operation (assq-ref warning 'operation))
+            (target (assq-ref warning 'target))
+            (message (assq-ref warning 'message)))
+        (format #f "~a~a: ~a failed — ~a"
+                (if (symbol? provider) (string-titlecase (symbol->string provider)) "Inspection")
+                (if (or (string? target) (number? target))
+                    (string-append " " (one-line (atom-text target))) "")
+                (case operation
+                  ((inspect) "inspection")
+                  ((scan) "discovery")
+                  (else (if (symbol? operation) (symbol->string operation) "inspection")))
+                (one-line message)))
+      (if (string? warning) (one-line warning) "Inspection returned an unrecognized warning")))
+
+(define* (hearth-activity #:key (command command-output))
   "Export observed Weft activity; missing enrichment remains null with warnings."
-  (let* ((reply (read-value (command-output "eval" (object->string query))))
+  (let* ((reply (read-value (command "eval" (object->string query))))
          (raw (and (eq? 'ok (assq-ref reply 'status))
                    (not (assq-ref reply 'truncated))
                    (read-value (assq-ref reply 'value))))
@@ -93,8 +163,15 @@
         (if (and entry (assq-ref entry 'ok))
             (assq-ref entry 'value)
             (begin
-              (warn! (format #f "~a unavailable: ~a" name
-                             (and entry (assq-ref entry 'error))))
+              (warn! (format #f "~a unavailable: ~a"
+                             (case name
+                               ((sessions) "Session discovery")
+                               ((emacs-sessions) "Emacs session hosts")
+                               ((layout) "Terminal inspection")
+                               ((watches) "Watch discovery")
+                               ((notices) "Notice history")
+                               (else name))
+                             (error-summary (and entry (assq-ref entry 'error)))))
               fallback))))
     (define (bounded name values count)
       (when (> (length values) count)
@@ -112,18 +189,19 @@
            (owner-state
              (catch #t
                (lambda ()
-                 (let* ((generation (isolated-generation))
+                 (let* ((generation (isolated-generation command))
                         (effects (vector->list
-                                   (assoc-ref (json-string->scm (command-output "owner" "view")) "effects"))))
-                   (unless (equal? generation (isolated-generation))
+                                   (assoc-ref (json-string->scm (command "owner" "view")) "effects"))))
+                   (unless (equal? generation (isolated-generation command))
                      (error "Isolated workspace restarted during owner export"))
                    (cons generation effects)))
-               (lambda arguments
-                 (warn! (format #f "Owner effects unavailable: ~s" arguments))
+               (lambda (key . arguments)
+                 (warn! (format #f "Owner effects unavailable: ~a" (exception-summary key arguments)))
                  #f)))
            (effects (if owner-state (cdr owner-state) '())))
-      (for-each (lambda (warning) (warn! (object->string warning)))
-                (assq-ref session-result 'warnings))
+      (for-each (lambda (warning) (warn! (warning-summary warning)))
+                (filter (lambda (warning) (relevant-warning? warning sessions))
+                        (assq-ref session-result 'warnings)))
       (define (session-json session)
         (let* ((id (assq-ref session 'id))
                (enriched (find (lambda (row) (equal? id (assq-ref row 'id))) hosts))
