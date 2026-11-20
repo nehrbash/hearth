@@ -480,3 +480,26 @@
                               #:command publish #:now (lambda () 1795149920000)) "Tray/audio mixed stream failed")
 (check (= 4 attempts) "Tray/audio EOF observations missing")
 (display "Service exporter tests passed\n")
+
+(define pam-envelope
+  '(("version" . 1) ("service" . "pam") ("status" . "available") ("observed_at_ms" . 42)
+    ("state" . (("phase" . "authenticating") ("outcome" . null))) ("error" . null)))
+(check (decode pam-envelope) "PAM phase observation rejected")
+(for-each
+  (lambda (state)
+    (check (fails? (lambda () (decode (replace pam-envelope "state" state)))) "Private or malformed PAM state accepted"))
+  '((("phase" . "idle") ("outcome" . null) ("username" . "secret"))
+    (("phase" . "authenticating") ("outcome" . null) ("prompt" . "secret"))
+    (("phase" . "idle") ("outcome" . null) ("response_length" . 5))
+    (("phase" . "idle") ("outcome" . null) ("attempt" . "secret"))
+    (("phase" . "idle") ("outcome" . null) ("session" . "secret"))
+    (("phase" . "finished") ("outcome" . null))
+    (("phase" . "idle") ("outcome" . "authenticated"))
+    (("phase" . "unknown") ("outcome" . null))))
+(for-each (lambda (outcome)
+  (check (decode (replace pam-envelope "state" `(("phase" . "finished") ("outcome" . ,outcome)))) "PAM final outcome rejected"))
+  '("authenticated" "denied" "account_denied" "cancelled" "timeout" "error"))
+(check (fails? (lambda () (decode
+  '(("version" . 1) ("service" . "pam") ("status" . "unavailable") ("observed_at_ms" . 42) ("state" . null) ("error" . "secret")))))
+  "PAM free-text error accepted")
+(display "PAM service exporter tests passed\n")

@@ -1,0 +1,18 @@
+{
+  "channel": "pam",
+  "sensitive": true,
+  "node_count": 8,
+  "native_size": [
+    720,
+    760
+  ],
+  "phase": "idle",
+  "weft_publication_idle": true,
+  "auth_attempts": 0,
+  "host_authentication": false,
+  "session_lock_changed": false,
+  "controller_exit": 0,
+  "renderer_exit": 0,
+  "socket_removed": true,
+  "weft_unavailable_after_exit": true
+}

@@ -37,4 +37,5 @@ pub mod audio;
 pub mod audio_pipewire;
 
 pub mod icons;
+pub mod pam;
 pub mod tray;

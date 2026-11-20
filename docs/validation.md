@@ -105,9 +105,9 @@ preserving the last observation timestamp. The publication budget is 120 KiB.
 
 ## Automated checks
 
-The recorded final check run passed strict Clippy, 200 Rust tests including GPU
-snapshot comparisons, and nine Guile suites: activity export, service export,
-UI client, Weft watches, mirror, Bluetooth UI, Notifications UI, Audio UI and Tray UI. Focused checks cover atomic invalid updates,
+The recorded final check run passed strict Clippy, 212 Rust tests including GPU
+snapshot comparisons, and ten Guile suites: activity export, service export,
+UI client, Weft watches, mirror, Bluetooth UI, Notifications UI, Audio UI, Tray UI and PAM UI. Focused checks cover atomic invalid updates,
 producer ownership, disconnect/reconnect, more than 64 epochs, optional fields,
 partial input, bounded clients/queues, input routing and presentation identity.
 The UI client suite includes live handler redefinition/advice and 70 renderer
@@ -158,3 +158,23 @@ records an empty private tray reaching the 720×760 panel, a second observer
 preserving watcher ownership, Weft publication and clean socket teardown.
 Item actions and menus are exercised by separate private-bus mocks; no watcher
 ownership was requested on the host bus.
+
+
+## PAM
+
+Eight private-policy tests compile a synthetic PAM module without touching host
+policy. They exercise all conversation styles, authentication/account denial,
+PAM_USER changes, stale/duplicate replies, deadlines, crash/cancel, parent death,
+backpressure and helper-process cleanup. A permissive private `other` policy
+cannot authorize a missing explicitly selected service. Three model tests cover
+bounds and identity, and Scheme tests cover masked input, privacy, prompt replay,
+publication filtering and SIGTERM/SIGINT cleanup.
+
+Three Scheme-generated PNGs show idle, masked response and account denial.
+They were inspected at 1× and pass exact comparisons. The
+[native smoke evidence](../artifacts/pam-native-proof.json) records the idle
+720×760 panel, sensitive-channel metadata, Weft publication and unavailability
+on clean shutdown. No authentication attempt or compositor lock change occurred.
+The [security review](pam-security.md) records the checked boundary and fixes;
+[PAM usage](pam.md) documents the ASCII-only keyboard and separate session-lock
+integration. ADR-011 remains Proposed for owner review.
