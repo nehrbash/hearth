@@ -1,5 +1,9 @@
 use std::{error::Error, fmt};
 
+pub const MAX_VALUE_MAGNITUDE: f64 = 1.0e12;
+pub const MIN_SPRING_PARAMETER: f64 = 1.0e-6;
+pub const MAX_SPRING_PARAMETER: f64 = 1.0e6;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Px(pub f64);
 
@@ -48,6 +52,7 @@ pub enum AnimationError {
     InvalidPhase,
     InvalidSpring,
     NonFiniteValue,
+    ValueOutOfRange,
 }
 
 impl fmt::Display for AnimationError {
@@ -56,9 +61,10 @@ impl fmt::Display for AnimationError {
             Self::InvalidTime => "time must be finite and nonnegative",
             Self::InvalidPhase => "phase must be finite and between zero and one",
             Self::InvalidSpring => {
-                "spring frequency, damping and tolerance must be finite and positive"
+                "spring frequency and damping must be within 1e-6..=1e6; tolerance must be finite and positive"
             }
             Self::NonFiniteValue => "animated values must be finite",
+            Self::ValueOutOfRange => "animated value magnitude exceeds 1e12",
         })
     }
 }
@@ -153,10 +159,8 @@ impl Spring {
         if [angular_frequency, damping_ratio, tolerance]
             .iter()
             .all(|value| value.is_finite() && *value > 0.0)
-            && (angular_frequency * angular_frequency).is_finite()
-            && (damping_ratio * damping_ratio).is_finite()
-            && (angular_frequency * damping_ratio).is_finite()
-            && (angular_frequency * (2.0 * damping_ratio)).is_finite()
+            && (MIN_SPRING_PARAMETER..=MAX_SPRING_PARAMETER).contains(&frequency_hz)
+            && (MIN_SPRING_PARAMETER..=MAX_SPRING_PARAMETER).contains(&damping_ratio)
         {
             Ok(Self {
                 angular_frequency,
@@ -177,10 +181,13 @@ impl Spring {
             return (displacement.scaled(0.0), velocity.scaled(0.0));
         }
         if damping == 1.0 {
-            let tangent = velocity.add_scaled(displacement, omega);
             (
-                displacement.add_scaled(tangent, time).scaled(decay),
-                velocity.add_scaled(tangent, -omega * time).scaled(decay),
+                displacement
+                    .scaled((1.0 + omega * time) * decay)
+                    .add_scaled(velocity, time * decay),
+                velocity
+                    .scaled((1.0 - omega * time) * decay)
+                    .add_scaled(displacement, -omega * omega * time * decay),
             )
         } else if damping < 1.0 {
             let damped_frequency = omega * (1.0 - damping * damping).sqrt();
@@ -189,13 +196,11 @@ impl Spring {
             let cosine = angle.cos();
             (
                 displacement
-                    .scaled(cosine + decay_rate * sine)
-                    .add_scaled(velocity, sine)
-                    .scaled(decay),
+                    .scaled((cosine + decay_rate * sine) * decay)
+                    .add_scaled(velocity, sine * decay),
                 velocity
-                    .scaled(cosine - decay_rate * sine)
-                    .add_scaled(displacement, -omega * omega * sine)
-                    .scaled(decay),
+                    .scaled((cosine - decay_rate * sine) * decay)
+                    .add_scaled(displacement, -omega * omega * sine * decay),
             )
         } else {
             let root = (damping * damping - 1.0).sqrt();
@@ -254,9 +259,7 @@ pub struct Prop<T> {
 
 impl<T: AnimationValue> Prop<T> {
     pub fn new(value: T) -> Result<Self, AnimationError> {
-        if !value.magnitude().is_finite() {
-            return Err(AnimationError::NonFiniteValue);
-        }
+        Self::validate_value(value)?;
         Ok(Self {
             value,
             target: value,
@@ -281,9 +284,8 @@ impl<T: AnimationValue> Prop<T> {
         target: T,
         transition: Transition,
     ) -> Result<FrameChange, AnimationError> {
-        if !target.magnitude().is_finite()
-            || !self.value.add_scaled(target, -1.0).magnitude().is_finite()
-        {
+        Self::validate_value(target)?;
+        if !self.value.add_scaled(target, -1.0).magnitude().is_finite() {
             return Err(AnimationError::NonFiniteValue);
         }
         let before = self.value;
@@ -318,6 +320,17 @@ impl<T: AnimationValue> Prop<T> {
             changed: self.value != before,
             active: self.is_active(),
         })
+    }
+
+    fn validate_value(value: T) -> Result<(), AnimationError> {
+        let magnitude = value.magnitude();
+        if !magnitude.is_finite() {
+            Err(AnimationError::NonFiniteValue)
+        } else if magnitude > MAX_VALUE_MAGNITUDE {
+            Err(AnimationError::ValueOutOfRange)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn advance(&mut self, delta: Seconds) -> FrameChange {
@@ -369,6 +382,7 @@ impl<T: AnimationValue> Prop<T> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -640,5 +654,37 @@ mod tests {
         );
         assert_eq!(prop.value(), Px(1.0));
         assert_eq!(prop.target(), Px(1.0));
+    }
+
+    #[test]
+    fn finite_out_of_range_values_are_rejected_atomically() {
+        assert!(matches!(
+            Prop::new(Px(1.0e308)),
+            Err(AnimationError::ValueOutOfRange)
+        ));
+        let mut prop = Prop::new(Px(1.0)).expect("initial property");
+        prop.transition_to(
+            Px(2.0),
+            Transition::Spring(Spring::new(2.0, 1.0, 0.001).expect("spring")),
+        )
+        .expect("valid target");
+        assert_eq!(
+            prop.transition_to(Px(1.0e308), Transition::Immediate),
+            Err(AnimationError::ValueOutOfRange)
+        );
+        assert_eq!(prop.value(), Px(1.0));
+        assert_eq!(prop.target(), Px(2.0));
+        assert!(prop.is_active());
+        for (frequency, damping) in [
+            (MIN_SPRING_PARAMETER / 2.0, 1.0),
+            (MAX_SPRING_PARAMETER * 2.0, 1.0),
+            (2.0, MIN_SPRING_PARAMETER / 2.0),
+            (2.0, MAX_SPRING_PARAMETER * 2.0),
+        ] {
+            assert_eq!(
+                Spring::new(frequency, damping, 0.001),
+                Err(AnimationError::InvalidSpring)
+            );
+        }
     }
 }

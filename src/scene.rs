@@ -33,9 +33,16 @@ impl Bounds {
     }
 
     fn valid(self) -> bool {
-        [self.x, self.y, self.width, self.height]
-            .iter()
-            .all(|v| v.is_finite())
+        [
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            self.x + self.width,
+            self.y + self.height,
+        ]
+        .iter()
+        .all(|v| v.is_finite())
             && self.width >= 0.0
             && self.height >= 0.0
     }
@@ -78,14 +85,22 @@ impl Scene {
     }
 
     pub fn replace(&mut self, roots: Vec<Node>) -> anyhow::Result<bool> {
-        fn validate(nodes: &[Node], depth: usize, count: &mut usize) -> anyhow::Result<()> {
+        fn validate(
+            nodes: &[Node],
+            depth: usize,
+            count: &mut usize,
+            offset: [f32; 2],
+        ) -> anyhow::Result<()> {
             anyhow::ensure!(depth <= 64, "Scene nesting exceeds 64");
             *count += nodes.len();
             anyhow::ensure!(*count <= 4096, "Scene exceeds 4096 nodes");
             for node in nodes {
                 match node {
                     Node::Rect { bounds, color } => {
-                        anyhow::ensure!(bounds.valid(), "Invalid rectangle geometry");
+                        anyhow::ensure!(
+                            bounds.valid() && bounds.translated(offset).valid(),
+                            "Invalid rectangle geometry"
+                        );
                         anyhow::ensure!(
                             color
                                 .iter()
@@ -93,22 +108,29 @@ impl Scene {
                             "Invalid color"
                         );
                     }
-                    Node::Group { offset, children } => {
+                    Node::Group {
+                        offset: local,
+                        children,
+                    } => {
+                        let translated = [offset[0] + local[0], offset[1] + local[1]];
                         anyhow::ensure!(
-                            offset.iter().all(|v| v.is_finite()),
+                            local.iter().chain(&translated).all(|v| v.is_finite()),
                             "Invalid translation"
                         );
-                        validate(children, depth + 1, count)?;
+                        validate(children, depth + 1, count, translated)?;
                     }
                     Node::Clip { bounds, children } => {
-                        anyhow::ensure!(bounds.valid(), "Invalid clip geometry");
-                        validate(children, depth + 1, count)?;
+                        anyhow::ensure!(
+                            bounds.valid() && bounds.translated(offset).valid(),
+                            "Invalid clip geometry"
+                        );
+                        validate(children, depth + 1, count, offset)?;
                     }
                 }
             }
             Ok(())
         }
-        validate(&roots, 0, &mut 0)?;
+        validate(&roots, 0, &mut 0, [0.0; 2])?;
         let changed = self.roots != roots;
         if changed {
             self.roots = roots;
@@ -223,6 +245,41 @@ mod tests {
         );
         assert_eq!(scene.quads(Bounds::new(0.0, 0.0, 10.0, 10.0)).len(), 1);
         assert!(!scene.take_damage());
+        Ok(())
+    }
+
+    #[test]
+    fn overflowing_accumulated_geometry_is_rejected_atomically() -> anyhow::Result<()> {
+        let mut scene = Scene::new(vec![rect(0.0, 0.0, 10.0, 10.0, [1.0; 4])])?;
+        scene.take_damage();
+        let original = scene.quads(Bounds::new(0.0, 0.0, 100.0, 100.0));
+        let mut nested = rect(0.0, 0.0, 10.0, 10.0, [1.0; 4]);
+        for offset in [-f32::MAX, -f32::MAX, f32::MAX, f32::MAX] {
+            nested = Node::Group {
+                offset: [offset, 0.0],
+                children: vec![nested],
+            };
+        }
+        assert!(scene.replace(vec![nested]).is_err());
+        assert_eq!(scene.quads(Bounds::new(0.0, 0.0, 100.0, 100.0)), original);
+        assert!(!scene.take_damage());
+        assert!(
+            scene
+                .replace(vec![rect(f32::MAX, 0.0, f32::MAX, 10.0, [1.0; 4])])
+                .is_err()
+        );
+        assert!(
+            scene
+                .replace(vec![Node::Group {
+                    offset: [f32::MAX, 0.0],
+                    children: vec![Node::Clip {
+                        bounds: Bounds::new(f32::MAX, 0.0, 10.0, 10.0),
+                        children: vec![],
+                    }],
+                }])
+                .is_err()
+        );
+        assert_eq!(scene.quads(Bounds::new(0.0, 0.0, 100.0, 100.0)), original);
         Ok(())
     }
 }

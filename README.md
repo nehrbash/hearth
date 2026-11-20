@@ -52,3 +52,30 @@ It stops requesting frames when its spring settles. The finite benchmark keeps
 rendering to its explicit frame count and logs each actual interval. Animation
 snapshots sample the same spring at 60 Hz at 0, 0.15, 0.5 and 2 seconds; the GPU
 tests compare all four PNGs exactly.
+
+## Weft zones
+
+```sh
+cargo run -- --zones fixtures/weft-zones.json --snapshot artifacts/zones.png
+mkdir -m 700 "$XDG_RUNTIME_DIR/hearth"
+cargo run -- --listen "$XDG_RUNTIME_DIR/hearth/ui.sock"
+# In another terminal, outside the render process:
+guile -L scheme scheme/live.scm "$XDG_RUNTIME_DIR/hearth/ui.sock"
+```
+
+The panel shows typed text, metric, table and wiring data. Text uses Glyphon and
+Cosmic Text, with bundled licensed DejaVu fonts for deterministic snapshots.
+Long tables and excess zones have explicit preview limits. The socket wakes the
+Wayland loop only when data arrives; Scheme never runs in a frame callback.
+SIGINT/SIGTERM close the surface and remove the owned socket. Existing sockets
+are never overwritten. See [the protocol](docs/protocol.md) for limits and bindings.
+
+`cargo test --test zones_snapshot` compares `snapshots/w0-zones.png` exactly.
+Regenerate it explicitly with the fixture command above targeting that path,
+then inspect the PNG at 1×. The live producer needs Guile, guile-json and the
+installed Weft CLI. It reads data only; the panel does not approve effects or
+claim terminal leases.
+
+Animated inputs have magnitude at most 1e12. Spring frequency (Hz) and damping
+ratio must each lie in 1e-6..=1e6; tolerance is finite and positive. Scene updates
+validate accumulated translations and extents before replacing the visible tree.

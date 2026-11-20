@@ -1,4 +1,10 @@
-use std::{ptr::NonNull, time::Instant};
+use std::{
+    io,
+    os::{fd::AsRawFd, unix::net::UnixStream},
+    path::PathBuf,
+    ptr::NonNull,
+    time::Instant,
+};
 
 use anyhow::{Context, Result};
 use raw_window_handle::{
@@ -24,7 +30,15 @@ use wayland_client::{
     protocol::{wl_output, wl_surface},
 };
 
-use crate::{animation::Seconds, animation_demo::Demo, gpu::Gpu, render::Renderer, scene::Scene};
+use crate::{
+    animation::Seconds,
+    animation_demo::Demo,
+    gpu::Gpu,
+    panel::{self, Panel},
+    protocol::{Snapshot, SnapshotListener, SnapshotStore},
+    render::{PanelRenderer, Renderer},
+    scene::Scene,
+};
 
 pub struct SurfaceOptions {
     pub width: u32,
@@ -32,6 +46,8 @@ pub struct SurfaceOptions {
     pub frames: Option<u32>,
     pub scene: Option<Scene>,
     pub animate: bool,
+    pub snapshot: Option<Snapshot>,
+    pub listen: Option<PathBuf>,
 }
 
 impl Default for SurfaceOptions {
@@ -42,6 +58,40 @@ impl Default for SurfaceOptions {
             frames: None,
             scene: None,
             animate: false,
+            snapshot: None,
+            listen: None,
+        }
+    }
+}
+
+struct Shutdown {
+    read: UnixStream,
+    handlers: Vec<signal_hook::SigId>,
+}
+
+impl Shutdown {
+    fn new() -> io::Result<Self> {
+        let (read, write) = UnixStream::pair()?;
+        let mut shutdown = Self {
+            read,
+            handlers: Vec::new(),
+        };
+        for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+            shutdown
+                .handlers
+                .push(signal_hook::low_level::pipe::register(
+                    signal,
+                    write.try_clone()?,
+                )?);
+        }
+        Ok(shutdown)
+    }
+}
+
+impl Drop for Shutdown {
+    fn drop(&mut self) {
+        for handler in self.handlers.drain(..) {
+            signal_hook::low_level::unregister(handler);
         }
     }
 }
@@ -52,6 +102,17 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         "Surface dimensions must be positive"
     );
     anyhow::ensure!(options.frames != Some(0), "Frame count must be positive");
+    let shutdown = Shutdown::new()?;
+    let listener = options
+        .listen
+        .as_ref()
+        .map(SnapshotListener::bind)
+        .transpose()?;
+    let mut snapshots = SnapshotStore::default();
+    if let Some(snapshot) = options.snapshot {
+        snapshots.apply(snapshot)?;
+    }
+    let zones_mode = listener.is_some() || snapshots.current().is_some();
     let conn = Connection::connect_to_env().context("Cannot connect to Wayland")?;
     let (globals, mut events) = registry_queue_init(&conn)?;
     let qh = events.handle();
@@ -101,6 +162,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         None => options.scene,
     };
     let renderer = scene.as_ref().map(|_| Renderer::new(&gpu, config.format));
+    let panel_renderer = zones_mode.then(|| PanelRenderer::new(&gpu, config.format));
     let mut app = App {
         surface,
         layer,
@@ -112,6 +174,11 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         last_frame: None,
         frame_pending: false,
         renderer,
+        panel_renderer,
+        panel: None,
+        snapshots,
+        listener,
+        configured: false,
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         frames: 0,
@@ -120,7 +187,69 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         error: None,
     };
     while !app.exit {
-        events.blocking_dispatch(&mut app)?;
+        events.dispatch_pending(&mut app)?;
+        app.apply_updates(&qh)?;
+        if app.exit {
+            break;
+        }
+        let Some(guard) = events.prepare_read() else {
+            continue;
+        };
+        let mut interests = libc::POLLIN;
+        match events.flush() {
+            Ok(()) => {}
+            Err(wayland_client::backend::WaylandError::Io(error))
+                if error.kind() == io::ErrorKind::WouldBlock =>
+            {
+                interests |= libc::POLLOUT
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: guard.connection_fd().as_raw_fd(),
+                events: interests,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: app
+                    .listener
+                    .as_ref()
+                    .map_or(-1, SnapshotListener::update_fd),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: shutdown.read.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // The prepared Wayland read and listener own these descriptors through poll.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if fds[2].revents & libc::POLLIN != 0 {
+            break;
+        }
+        anyhow::ensure!(
+            fds.iter()
+                .all(|fd| fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) == 0),
+            "Wayland or update channel disconnected"
+        );
+        if fds[0].revents & libc::POLLIN != 0 {
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(error))
+                    if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
     if let Some(error) = app.error {
         return Err(error);
@@ -137,6 +266,11 @@ struct App {
     config: wgpu::SurfaceConfiguration,
     scene: Option<Scene>,
     renderer: Option<Renderer>,
+    panel_renderer: Option<PanelRenderer>,
+    panel: Option<Panel>,
+    snapshots: SnapshotStore,
+    listener: Option<SnapshotListener>,
+    configured: bool,
     animation: Option<Demo>,
     last_frame: Option<Instant>,
     frame_pending: bool,
@@ -149,6 +283,60 @@ struct App {
 }
 
 impl App {
+    fn rebuild_panel(&mut self) -> Result<()> {
+        if self.panel_renderer.is_some() {
+            let waiting = Snapshot {
+                version: 1,
+                kind: "snapshot".into(),
+                workspace: "Awaiting Weft".into(),
+                generation: "awaiting".into(),
+                revision: 0,
+                zones: Vec::new(),
+            };
+            let current = self.snapshots.current();
+            self.panel = Some(panel::zones(
+                current.as_deref().unwrap_or(&waiting),
+                self.config.width,
+                self.config.height,
+            )?);
+        }
+        Ok(())
+    }
+
+    fn apply_updates(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        let Some(listener) = &self.listener else {
+            return Ok(());
+        };
+        listener.drain_notifications()?;
+        if let Some(error) = listener.take_error() {
+            eprintln!("snapshot rejected: {error}");
+        }
+        let Some(snapshot) = listener.take_latest() else {
+            return Ok(());
+        };
+        let next = match panel::zones(&snapshot, self.config.width, self.config.height) {
+            Ok(panel) => panel,
+            Err(error) => {
+                eprintln!("snapshot rejected: {error}");
+                return Ok(());
+            }
+        };
+        match self.snapshots.apply((*snapshot).clone()) {
+            Ok(_) => {
+                eprintln!(
+                    "snapshot workspace={} generation={} revision={}",
+                    snapshot.workspace, snapshot.generation, snapshot.revision
+                );
+                self.panel = Some(next);
+                if self.configured {
+                    self.draw(qh);
+                }
+            }
+            Err(error) => eprintln!("snapshot rejected: {error}"),
+        }
+        Ok(())
+    }
+
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         if let Err(error) = self.draw_frame(qh) {
             self.error = Some(error);
@@ -172,7 +360,14 @@ impl App {
             .get_current_texture()
             .context("Cannot acquire surface texture")?;
         let view = frame.texture.create_view(&Default::default());
-        if let (Some(scene), Some(renderer)) = (&mut self.scene, &self.renderer) {
+        if let (Some(panel), Some(renderer)) = (&self.panel, &mut self.panel_renderer) {
+            renderer.draw(
+                &self.gpu,
+                &view,
+                panel,
+                [self.config.width, self.config.height],
+            )?;
+        } else if let (Some(scene), Some(renderer)) = (&mut self.scene, &self.renderer) {
             renderer.draw(
                 &self.gpu,
                 &view,
@@ -272,6 +467,12 @@ impl LayerShellHandler for App {
             self.config.height = config.new_size.1;
         }
         self.surface.configure(&self.gpu.device, &self.config);
+        self.configured = true;
+        if let Err(error) = self.rebuild_panel() {
+            self.error = Some(error);
+            self.exit = true;
+            return;
+        }
         self.draw(qh);
     }
 }

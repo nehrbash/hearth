@@ -62,7 +62,7 @@ impl Renderer {
                 primitive: Default::default(),
                 depth_stencil: None,
                 multisample: Default::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
         Self { pipeline }
@@ -106,6 +106,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if !vertices.is_empty() {
                 pass.set_pipeline(&self.pipeline);
@@ -117,12 +118,59 @@ impl Renderer {
     }
 }
 
-pub fn offscreen(gpu: &Gpu, scene: &Scene, width: u32, height: u32) -> Result<Vec<u8>> {
+pub struct PanelRenderer {
+    geometry: Renderer,
+    text: crate::text::TextSystem,
+}
+
+impl PanelRenderer {
+    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
+        Self {
+            geometry: Renderer::new(gpu, format),
+            text: crate::text::TextSystem::new(gpu, format),
+        }
+    }
+
+    pub fn draw(
+        &mut self,
+        gpu: &Gpu,
+        view: &wgpu::TextureView,
+        panel: &crate::panel::Panel,
+        size: [u32; 2],
+    ) -> Result<()> {
+        self.text.prepare(gpu, size, &panel.labels)?;
+        self.geometry.draw(gpu, view, &panel.scene, size);
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Panel text"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.text.render(&mut pass)?;
+        }
+        gpu.queue.submit([encoder.finish()]);
+        Ok(())
+    }
+}
+
+fn snapshot_texture(gpu: &Gpu, width: u32, height: u32) -> Result<wgpu::Texture> {
     anyhow::ensure!(
         width > 0 && height > 0 && width <= 8192 && height <= 8192,
         "Invalid snapshot size"
     );
-    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+    Ok(gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Snapshot"),
         size: wgpu::Extent3d {
             width,
@@ -135,13 +183,37 @@ pub fn offscreen(gpu: &Gpu, scene: &Scene, width: u32, height: u32) -> Result<Ve
         format: SNAPSHOT_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
-    });
+    }))
+}
+
+pub fn offscreen(gpu: &Gpu, scene: &Scene, width: u32, height: u32) -> Result<Vec<u8>> {
+    let texture = snapshot_texture(gpu, width, height)?;
     Renderer::new(gpu, SNAPSHOT_FORMAT).draw(
         gpu,
         &texture.create_view(&Default::default()),
         scene,
         [width, height],
     );
+    read_texture(gpu, &texture, width, height)
+}
+
+pub fn offscreen_panel(
+    gpu: &Gpu,
+    panel: &crate::panel::Panel,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let texture = snapshot_texture(gpu, width, height)?;
+    PanelRenderer::new(gpu, SNAPSHOT_FORMAT).draw(
+        gpu,
+        &texture.create_view(&Default::default()),
+        panel,
+        [width, height],
+    )?;
+    read_texture(gpu, &texture, width, height)
+}
+
+fn read_texture(gpu: &Gpu, texture: &wgpu::Texture, width: u32, height: u32) -> Result<Vec<u8>> {
     let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
         * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -170,7 +242,7 @@ pub fn offscreen(gpu: &Gpu, scene: &Scene, width: u32, height: u32) -> Result<Ve
         .map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
-    gpu.device.poll(wgpu::PollType::Wait)?;
+    gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
     receiver
         .recv()
         .context("GPU readback callback disappeared")??;

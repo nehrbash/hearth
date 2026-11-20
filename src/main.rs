@@ -4,6 +4,8 @@ use anyhow::{Context, Result, bail};
 use hearth::{
     animation_demo,
     gpu::Gpu,
+    panel,
+    protocol::Snapshot,
     render, scene,
     wayland::{SurfaceOptions, run},
 };
@@ -12,6 +14,7 @@ fn main() -> Result<()> {
     let mut options = SurfaceOptions::default();
     let mut snapshot: Option<PathBuf> = None;
     let mut show_scene = false;
+    let mut zones: Option<PathBuf> = None;
     let mut animation_snapshots: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -27,6 +30,14 @@ fn main() -> Result<()> {
                 )
             }
             "--scene" => show_scene = true,
+            "--zones" => zones = Some(args.next().context("--zones requires a JSON path")?.into()),
+            "--listen" => {
+                options.listen = Some(
+                    args.next()
+                        .context("--listen requires a socket path")?
+                        .into(),
+                )
+            }
             "--animate" => options.animate = true,
             "--animation-snapshots" => {
                 animation_snapshots = Some(
@@ -37,12 +48,30 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless scene PNG. COUNT enables a finite render benchmark."
+                    "hearth [--scene | --animate | --zones FILE] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless scene PNG. COUNT enables a finite render benchmark."
                 );
                 return Ok(());
             }
             _ => bail!("Unknown argument: {arg}"),
         }
+    }
+    let zones_mode = zones.is_some() || options.listen.is_some();
+    anyhow::ensure!(
+        !(zones_mode && (show_scene || options.animate || animation_snapshots.is_some())),
+        "Zones mode cannot be combined with a scene or animation demo"
+    );
+    anyhow::ensure!(
+        !(options.listen.is_some() && snapshot.is_some()),
+        "--listen requires a native surface"
+    );
+    if let Some(path) = zones {
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+        options.snapshot = Some(Snapshot::decode(&bytes)?);
+    }
+    if zones_mode {
+        options.width = 920;
+        options.height = 680;
     }
     if let Some(directory) = animation_snapshots {
         std::fs::create_dir_all(&directory)?;
@@ -58,8 +87,25 @@ fn main() -> Result<()> {
     }
     if let Some(path) = snapshot {
         let gpu = pollster::block_on(Gpu::request(&Gpu::instance(), None))?;
-        let pixels = render::offscreen(&gpu, &scene::demo()?, 640, 400)?;
-        render::write_png(&path, 640, 400, &pixels)?;
+        let (width, height, pixels) = if let Some(snapshot) = &options.snapshot {
+            (
+                options.width,
+                options.height,
+                render::offscreen_panel(
+                    &gpu,
+                    &panel::zones(snapshot, options.width, options.height)?,
+                    options.width,
+                    options.height,
+                )?,
+            )
+        } else {
+            (
+                640,
+                400,
+                render::offscreen(&gpu, &scene::demo()?, 640, 400)?,
+            )
+        };
+        render::write_png(&path, width, height, &pixels)?;
         println!("{}", path.display());
         return Ok(());
     }

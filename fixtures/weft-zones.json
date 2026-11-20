@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "kind": "snapshot",
+  "workspace": "isolated",
+  "generation": "fixture-1",
+  "revision": 1,
+  "zones": [
+    {"name": "status", "type": "text", "display": "Workspace ready", "rows": []},
+    {"name": "checks", "type": "metric", "display": "42", "rows": []},
+    {"name": "milestones", "type": "table", "display": "", "rows": [["Milestone", "State"], ["Runtime", "Ready"], ["Zones", "Connected"]]},
+    {"name": "flow", "type": "wiring", "display": "", "rows": [["Weft", "Snapshot"], ["Snapshot", "Hearth"]]}
+  ]
+}
