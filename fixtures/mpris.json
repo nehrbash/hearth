@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "kind": "snapshot",
+  "workspace": "Hearth services",
+  "generation": "mpris-fixture",
+  "revision": 1,
+  "zones": [
+    {
+      "name": "hearth-mpris",
+      "type": "table",
+      "display": "",
+      "rows": [
+        [
+          "Name",
+          "State"
+        ],
+        [
+          "MPRIS",
+          "available"
+        ],
+        [
+          "Observed UTC ms",
+          "1795153000000"
+        ],
+        [
+          "Woodland Player",
+          "Playing"
+        ],
+        [
+          "Title",
+          "Moonlit branches"
+        ],
+        [
+          "Artist",
+          "The Canopy"
+        ],
+        [
+          "Position",
+          "1:12 / 4:30"
+        ],
+        [
+          "Controls",
+          "play, pause, next, previous, seek"
+        ]
+      ]
+    }
+  ]
+}

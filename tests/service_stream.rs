@@ -341,3 +341,67 @@ fn upower_unavailable_once_and_broken_pipe_are_clean() -> Result<()> {
     exited(&mut child)?;
     Ok(())
 }
+
+#[test]
+fn probe_input_is_bounded_and_reaches_child_without_pipe_deadlock() -> Result<()> {
+    use hearth::services::capture_probe_input;
+    let (read, _stop) = UnixStream::pair()?;
+    let bytes = vec![b'x'; 16384];
+    let output = capture_probe_input(
+        Command::new("/bin/sh").args(["-c", "cat"]),
+        read.as_raw_fd(),
+        Duration::from_secs(2),
+        &bytes,
+    )?
+    .expect("child output");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, bytes);
+    assert!(
+        capture_probe_input(
+            &mut Command::new("false"),
+            read.as_raw_fd(),
+            Duration::from_secs(1),
+            &vec![b'x'; 16385]
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn mpris_missing_bus_and_interrupted_action_input_are_explicit() -> Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_hearth-service"))
+        .args(["mpris", "--once"])
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/nonexistent/hearth-mpris-test",
+        )
+        .output()?;
+    assert!(output.status.success());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["service"], "mpris");
+    assert_eq!(envelope["status"], "unavailable");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hearth-service"))
+        .args(["mpris", "--action"])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    thread::sleep(Duration::from_millis(100));
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            assert!(!status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Action input did not cancel");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}

@@ -26,4 +26,5 @@ pub mod interactive;
 pub mod services;
 pub mod upower;
 
+pub mod mpris;
 pub mod path;

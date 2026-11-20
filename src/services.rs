@@ -2,7 +2,7 @@ use crate::workspaces::{Instance, WorkspaceFeed, WorkspaceSnapshot};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{self, Read},
+    io::{self, Read, Write},
     os::fd::AsRawFd,
     path::Path,
     process::{Command, Stdio},
@@ -286,17 +286,36 @@ pub fn capture_probe(
     stop_fd: i32,
     timeout: Duration,
 ) -> Result<Option<ProbeOutput>> {
+    capture_probe_input(command, stop_fd, timeout, &[])
+}
+
+pub fn capture_probe_input(
+    command: &mut Command,
+    stop_fd: i32,
+    timeout: Duration,
+    input: &[u8],
+) -> Result<Option<ProbeOutput>> {
+    ensure!(input.len() <= 16384, "Probe input exceeds 16 KiB");
     if cancelled(stop_fd, Duration::ZERO)? {
         return Ok(None);
     }
     let deadline = Instant::now() + timeout;
     let mut child = ProbeChild(
         command
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .context("Start service probe")?,
     );
+    let mut stdin = child.0.stdin.take();
+    let mut sent = 0;
+    if let Some(port) = &stdin {
+        nonblocking(port.as_raw_fd())?;
+    }
+    if input.is_empty() {
+        stdin.take();
+    }
     let mut stdout = child.0.stdout.take().context("Missing probe stdout")?;
     let mut stderr = child.0.stderr.take().context("Missing probe stderr")?;
     nonblocking(stdout.as_raw_fd())?;
@@ -335,12 +354,17 @@ pub fn capture_probe(
                 events: libc::POLLIN,
                 revents: 0,
             },
+            libc::pollfd {
+                fd: stdin.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+                events: libc::POLLOUT,
+                revents: 0,
+            },
         ];
         let delay = deadline
             .saturating_duration_since(Instant::now())
             .as_millis()
             .clamp(1, 20) as i32;
-        if unsafe { libc::poll(fds.as_mut_ptr(), 3, delay) } < 0 {
+        if unsafe { libc::poll(fds.as_mut_ptr(), 4, delay) } < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::Interrupted {
                 continue;
@@ -349,6 +373,23 @@ pub fn capture_probe(
         }
         if fds[0].revents != 0 {
             return Ok(None);
+        }
+        if fds[3].revents != 0
+            && let Some(port) = &mut stdin
+        {
+            match port.write(&input[sent..]) {
+                Ok(0) => anyhow::bail!("Probe closed its input"),
+                Ok(count) => sent += count,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+            if sent == input.len() {
+                stdin.take();
+            }
         }
         let read = |stream: &mut dyn Read,
                     bytes: &mut Vec<u8>,
@@ -446,5 +487,45 @@ impl UpowerService {
         };
         self.due = Instant::now() + HEARTBEAT;
         Ok(Some(ServiceEnvelope::observed_service("upower", inspected)))
+    }
+}
+
+pub struct MprisService {
+    executable: std::path::PathBuf,
+    due: Instant,
+}
+impl MprisService {
+    pub fn new(executable: std::path::PathBuf) -> Self {
+        Self {
+            executable,
+            due: Instant::now(),
+        }
+    }
+    pub fn next(
+        &mut self,
+        stop_fd: i32,
+    ) -> Result<Option<ServiceEnvelope<crate::mpris::MprisSnapshot>>> {
+        if cancelled(stop_fd, self.due.saturating_duration_since(Instant::now()))? {
+            return Ok(None);
+        }
+        let output = capture_probe(
+            Command::new(&self.executable).arg("--probe-mpris"),
+            stop_fd,
+            Duration::from_millis(2500),
+        );
+        let snapshot = match output {
+            Ok(None) => return Ok(None),
+            Ok(Some(output)) if output.status.success() => {
+                serde_json::from_slice(&output.stdout).context("Decode MPRIS probe")
+            }
+            Ok(Some(output)) => Err(anyhow::anyhow!(
+                "MPRIS probe failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )),
+            Err(error) => Err(error),
+        };
+        self.due = Instant::now() + Duration::from_secs(1);
+        Ok(Some(ServiceEnvelope::observed_service("mpris", snapshot)))
     }
 }

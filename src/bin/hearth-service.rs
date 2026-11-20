@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use hearth::services::{HyprlandService, ServiceEnvelope, UpowerService};
+use hearth::services::{HyprlandService, MprisService, ServiceEnvelope, UpowerService};
 use std::{
-    io,
+    io::{self, Read},
     os::{fd::AsRawFd, unix::net::UnixStream},
 };
 
@@ -45,7 +45,9 @@ impl Drop for OutputFlags {
     }
 }
 fn emit<T: serde::Serialize>(envelope: &ServiceEnvelope<T>, stop: &UnixStream) -> Result<bool> {
-    let bytes = envelope.json_line()?;
+    emit_bytes(&envelope.json_line()?, stop)
+}
+fn emit_bytes(bytes: &[u8], stop: &UnixStream) -> Result<bool> {
     let fd = libc::STDOUT_FILENO;
     let mut offset = 0;
     while offset < bytes.len() {
@@ -93,22 +95,124 @@ fn emit<T: serde::Serialize>(envelope: &ServiceEnvelope<T>, stop: &UnixStream) -
     }
     Ok(true)
 }
+fn nonblocking_flags(fd: i32) -> Result<OutputFlags> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    anyhow::ensure!(
+        flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
+        "Cannot configure descriptor"
+    );
+    Ok(OutputFlags { fd, flags })
+}
+fn action_input(stop: &UnixStream) -> Result<Vec<u8>> {
+    let _flags = nonblocking_flags(libc::STDIN_FILENO)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2500);
+    let mut bytes = Vec::new();
+    loop {
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Action input deadline exceeded"
+        );
+        let mut fds = [
+            libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stop.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, 20) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        anyhow::ensure!(fds[1].revents == 0, "Action input cancelled");
+        if fds[0].revents != 0 {
+            let mut chunk = [0u8; 4096];
+            let count =
+                unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr().cast(), chunk.len()) };
+            if count == 0 {
+                return Ok(bytes);
+            }
+            if count < 0 {
+                let error = io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            anyhow::ensure!(
+                bytes.len() + count as usize <= 16384,
+                "MPRIS action exceeds 16 KiB"
+            );
+            bytes.extend_from_slice(&chunk[..count as usize]);
+        }
+    }
+}
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--probe-upower"] {
         println!("{}", serde_json::to_string(&hearth::upower::inspect()?)?);
         return Ok(());
     }
+    if args == ["--probe-mpris"] {
+        println!("{}", serde_json::to_string(&hearth::mpris::inspect()?)?);
+        return Ok(());
+    }
+    if args == ["--execute-mpris"] {
+        let mut bytes = Vec::new();
+        io::stdin().take(16385).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 16384, "MPRIS action exceeds 16 KiB");
+        let request: hearth::mpris::ActionRequest = serde_json::from_slice(&bytes)?;
+        hearth::mpris::execute(&request)?;
+        println!("{}", serde_json::json!({"status":"executed"}));
+        return Ok(());
+    }
+    if args == ["mpris", "--action"] {
+        let shutdown = Shutdown::new()?;
+        let bytes = action_input(&shutdown.read)?;
+        let _: hearth::mpris::ActionRequest = serde_json::from_slice(&bytes)?;
+        let output = hearth::services::capture_probe_input(
+            std::process::Command::new(std::env::current_exe()?).arg("--execute-mpris"),
+            shutdown.read.as_raw_fd(),
+            std::time::Duration::from_millis(2500),
+            &bytes,
+        )
+        .context("MPRIS action failed; outcome may be unknown; do not retry automatically")?
+        .context("MPRIS action cancelled; outcome may be unknown")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "MPRIS action failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _flags = nonblocking_flags(libc::STDOUT_FILENO)?;
+        emit_bytes(&output.stdout, &shutdown.read)?;
+        return Ok(());
+    }
+
     if args == ["--help"] || args == ["-h"] {
-        println!("Usage: hearth-service (hyprland|upower) [--once]");
+        println!(
+            "Usage: hearth-service (hyprland|upower|mpris) [--once]; mpris --action reads one JSON action from stdin"
+        );
         return Ok(());
     }
     anyhow::ensure!(
         args == ["hyprland"]
             || args == ["hyprland", "--once"]
             || args == ["upower"]
-            || args == ["upower", "--once"],
-        "Usage: hearth-service (hyprland|upower) [--once]"
+            || args == ["upower", "--once"]
+            || args == ["mpris"]
+            || args == ["mpris", "--once"],
+        "Usage: hearth-service (hyprland|upower|mpris) [--once]; mpris --action reads one JSON action from stdin"
     );
     let shutdown = Shutdown::new()?;
     let fd = io::stdout().as_raw_fd();
@@ -118,7 +222,14 @@ fn run() -> Result<()> {
         "Cannot configure service output"
     );
     let _output_flags = OutputFlags { fd, flags };
-    if args[0] == "upower" {
+    if args[0] == "mpris" {
+        let mut service = MprisService::new(std::env::current_exe()?);
+        while let Some(envelope) = service.next(shutdown.read.as_raw_fd())? {
+            if !emit(&envelope, &shutdown.read)? || args.len() == 2 {
+                break;
+            }
+        }
+    } else if args[0] == "upower" {
         let mut service = UpowerService::new(std::env::current_exe()?);
         while let Some(envelope) = service.next(shutdown.read.as_raw_fd())? {
             if !emit(&envelope, &shutdown.read)? || args.len() == 2 {
