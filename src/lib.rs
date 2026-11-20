@@ -13,3 +13,5 @@ pub mod text;
 pub mod wayland;
 
 pub mod effects;
+pub mod workspace_panel;
+pub mod workspaces;

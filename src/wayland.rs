@@ -11,7 +11,7 @@ use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
     delegate_seat,
     output::{OutputHandler, OutputState},
@@ -45,9 +45,15 @@ use crate::{
     protocol::{Snapshot, SnapshotListener, SnapshotStore},
     render::{PanelRenderer, Renderer},
     scene::Scene,
+    text::Label,
+    workspace_panel,
+    workspaces::{Instance, WorkspaceFeed, WorkspaceSnapshot},
 };
 
 pub struct SurfaceOptions {
+    pub workspaces: bool,
+    pub workspace_snapshot: Option<WorkspaceSnapshot>,
+    pub hyprland_instance: Option<String>,
     pub owner_controls: bool,
     pub view: panel::View,
     pub width: u32,
@@ -62,6 +68,9 @@ pub struct SurfaceOptions {
 impl Default for SurfaceOptions {
     fn default() -> Self {
         Self {
+            workspaces: false,
+            workspace_snapshot: None,
+            hyprland_instance: None,
             owner_controls: false,
             view: panel::View::Zones,
             width: 480,
@@ -117,6 +126,14 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         !options.owner_controls || matches!(options.view, panel::View::Owner),
         "Owner controls require the owner view"
     );
+    let workspace_mode = options.workspaces || options.workspace_snapshot.is_some();
+    let workspace_feed = if options.workspaces {
+        let instance = Instance::discover(options.hyprland_instance.as_deref())?;
+        eprintln!("workspace_instance={}", instance.signature);
+        Some(WorkspaceFeed::start(instance)?)
+    } else {
+        None
+    };
     let shutdown = Shutdown::new()?;
     let listener = options
         .listen
@@ -145,6 +162,13 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
     layer.set_margin(40, 40, 0, 0);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_exclusive_zone(0);
+    if workspace_mode {
+        let region = Region::new(&compositor)?;
+        layer
+            .wl_surface()
+            .set_input_region(Some(region.wl_region()));
+        eprintln!("workspace_input_region=empty exclusive_zone=0");
+    }
     layer.commit();
     let instance = Gpu::instance();
     let display =
@@ -177,8 +201,14 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
         None => options.scene,
     };
     let renderer = scene.as_ref().map(|_| Renderer::new(&gpu, config.format));
-    let panel_renderer = zones_mode.then(|| PanelRenderer::new(&gpu, config.format));
+    let panel_renderer =
+        (zones_mode || workspace_mode).then(|| PanelRenderer::new(&gpu, config.format));
     let mut app = App {
+        workspace_mode,
+        workspace_feed,
+        workspace_snapshot: options.workspace_snapshot,
+        workspace_error: None,
+        workspace_outputs: Vec::new(),
         surface,
         layer,
         _connection: conn.clone(),
@@ -210,6 +240,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
     };
     while !app.exit {
         events.dispatch_pending(&mut app)?;
+        app.apply_workspace_updates(&qh)?;
         app.apply_updates(&qh)?;
         app.apply_completions(&qh)?;
         if app.exit {
@@ -248,6 +279,14 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
                 revents: 0,
             },
             libc::pollfd {
+                fd: app
+                    .workspace_feed
+                    .as_ref()
+                    .map_or(-1, WorkspaceFeed::update_fd),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
                 fd: shutdown.read.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
@@ -262,7 +301,7 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
             }
             return Err(error.into());
         }
-        if fds[3].revents & libc::POLLIN != 0 {
+        if fds[4].revents & libc::POLLIN != 0 {
             break;
         }
         anyhow::ensure!(
@@ -287,6 +326,11 @@ pub fn run(options: SurfaceOptions) -> Result<()> {
 }
 
 struct App {
+    workspace_mode: bool,
+    workspace_feed: Option<WorkspaceFeed>,
+    workspace_snapshot: Option<WorkspaceSnapshot>,
+    workspace_error: Option<String>,
+    workspace_outputs: Vec<wl_output::WlOutput>,
     owner_controls: bool,
     owner_actions: OwnerActions,
     owner_buttons: Vec<OwnerButton>,
@@ -319,6 +363,10 @@ struct App {
 
 impl App {
     fn rebuild_panel(&mut self) -> Result<()> {
+        if self.workspace_mode {
+            self.panel = Some(self.build_workspace_panel()?);
+            return Ok(());
+        }
         if self.panel_renderer.is_some() {
             let waiting = Snapshot {
                 version: 1,
@@ -335,6 +383,114 @@ impl App {
             self.owner_buttons = buttons;
         }
         Ok(())
+    }
+
+    fn build_workspace_panel(&self) -> Result<Panel> {
+        let names: Vec<_> = self
+            .workspace_outputs
+            .iter()
+            .filter_map(|output| self.outputs.info(output).and_then(|info| info.name))
+            .collect();
+        let result = self
+            .workspace_snapshot
+            .as_ref()
+            .context("Awaiting compositor state")
+            .and_then(|state| {
+                anyhow::ensure!(
+                    names.len() == 1,
+                    "Awaiting one actual output for this surface"
+                );
+                workspace_panel::build(state, &names[0], self.config.width, self.config.height, 7)
+                    .map(|view| view.panel)
+            });
+        let (mut panel, error) = match result {
+            Ok(panel) => (panel, self.workspace_error.as_deref()),
+            Err(error) => {
+                return self.workspace_status_panel(&format!("Unavailable: {error}"));
+            }
+        };
+        if let Some(error) = error {
+            if let Some(title) = panel.labels.first_mut() {
+                title.text = "Stale".into();
+                title.color = [235, 195, 130, 255];
+            }
+            if let Some(footer) = panel.labels.last_mut() {
+                footer.text = format!("Unavailable: {error}");
+                footer.color = [235, 195, 130, 255];
+                *footer = footer.clone().ellipsis();
+            }
+        }
+        Ok(panel)
+    }
+
+    fn workspace_status_panel(&self, message: &str) -> Result<Panel> {
+        let width = self.config.width as f32;
+        let height = self.config.height as f32;
+        Ok(Panel {
+            scene: Scene::new(vec![crate::scene::rect(
+                0.0,
+                0.0,
+                width,
+                height,
+                panel::color([17, 23, 32]),
+            )])?,
+            labels: vec![
+                Label::new(
+                    "Unavailable",
+                    [8.0, 12.0, width - 16.0, 24.0],
+                    12.0,
+                    [235, 195, 130, 255],
+                ),
+                Label::new(
+                    message,
+                    [8.0, 46.0, width - 16.0, height - 64.0],
+                    11.0,
+                    [226, 232, 240, 255],
+                )
+                .wrap(),
+            ],
+        })
+    }
+
+    fn apply_workspace_updates(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        let Some(feed) = &self.workspace_feed else {
+            return Ok(());
+        };
+        feed.drain_notifications()?;
+        let update = feed.take_update();
+        if update.snapshot.is_none() && update.error.is_none() {
+            return Ok(());
+        }
+        if let Some(snapshot) = update.snapshot {
+            eprintln!(
+                "workspace_update instance={} workspaces={}",
+                snapshot.instance,
+                snapshot.workspaces.len()
+            );
+            self.workspace_snapshot = Some(snapshot);
+            self.workspace_error = None;
+        }
+        if let Some(error) = update.error {
+            eprintln!("workspace_unavailable={error}");
+            self.workspace_error = Some(error);
+        }
+        self.rebuild_panel()?;
+        if self.configured {
+            self.draw(qh);
+        }
+        Ok(())
+    }
+
+    fn workspace_output_changed(&mut self, qh: &QueueHandle<Self>) {
+        if !self.workspace_mode {
+            return;
+        }
+        if let Err(error) = self.rebuild_panel() {
+            self.error = Some(error);
+            self.exit = true;
+        } else if self.configured {
+            self.draw(qh);
+        }
     }
 
     fn build_panel(&self, snapshot: &Snapshot) -> Result<(Panel, Vec<OwnerButton>)> {
@@ -515,18 +671,30 @@ impl CompositorHandler for App {
     fn surface_enter(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if surface == self.layer.wl_surface() && !self.workspace_outputs.contains(output) {
+            self.workspace_outputs.push(output.clone());
+            eprintln!(
+                "workspace_surface_output={:?}",
+                self.outputs.info(output).and_then(|info| info.name)
+            );
+            self.workspace_output_changed(qh);
+        }
     }
     fn surface_leave(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if surface == self.layer.wl_surface() {
+            self.workspace_outputs.retain(|existing| existing != output);
+            self.workspace_output_changed(qh);
+        }
     }
 }
 
@@ -564,8 +732,28 @@ impl OutputHandler for App {
         &mut self.outputs
     }
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        if self.workspace_outputs.contains(&output) {
+            self.workspace_output_changed(qh);
+        }
+    }
+    fn output_destroyed(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        if self.workspace_outputs.contains(&output) {
+            self.workspace_outputs
+                .retain(|existing| existing != &output);
+            self.workspace_output_changed(qh);
+        }
+    }
 }
 
 impl ProvidesRegistryState for App {

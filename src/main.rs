@@ -8,6 +8,8 @@ use hearth::{
     protocol::Snapshot,
     render, scene,
     wayland::{SurfaceOptions, run},
+    workspace_panel,
+    workspaces::{Instance, WorkspaceSnapshot},
 };
 
 fn main() -> Result<()> {
@@ -15,6 +17,8 @@ fn main() -> Result<()> {
     let mut snapshot: Option<PathBuf> = None;
     let mut show_scene = false;
     let mut zones: Option<PathBuf> = None;
+    let mut workspace_file: Option<PathBuf> = None;
+    let mut monitor: Option<String> = None;
     let mut animation_snapshots: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -52,6 +56,23 @@ fn main() -> Result<()> {
                         .into(),
                 )
             }
+            "--workspaces" => options.workspaces = true,
+            "--workspace-state" => {
+                workspace_file = Some(
+                    args.next()
+                        .context("--workspace-state requires a JSON path")?
+                        .into(),
+                )
+            }
+            "--hyprland-instance" => {
+                options.hyprland_instance = Some(
+                    args.next()
+                        .context("--hyprland-instance requires a signature")?,
+                )
+            }
+            "--monitor" => {
+                monitor = Some(args.next().context("--monitor requires an output name")?)
+            }
             "--owner-controls" => options.owner_controls = true,
             "--animate" => options.animate = true,
             "--animation-snapshots" => {
@@ -63,7 +84,7 @@ fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
+                    "hearth [--scene | --animate | --state FILE] [--view zones|activity|owner] [--owner-controls] [--listen SOCKET] [--frames COUNT] [--snapshot PATH] [--animation-snapshots DIR]\nWorkspace bar: --workspaces [--hyprland-instance SIG], or --workspace-state FILE --snapshot PNG [--monitor NAME].\nRender a layer-shell surface or a headless PNG. COUNT enables a finite render benchmark. --zones is an alias for --state."
                 );
                 return Ok(());
             }
@@ -74,6 +95,49 @@ fn main() -> Result<()> {
         !options.owner_controls || (options.view == panel::View::Owner && snapshot.is_none()),
         "--owner-controls requires a native owner view"
     );
+    let workspace_mode = options.workspaces || workspace_file.is_some();
+    anyhow::ensure!(
+        !(options.workspaces && workspace_file.is_some()),
+        "Choose live --workspaces or --workspace-state"
+    );
+    anyhow::ensure!(
+        !workspace_mode
+            || !(zones.is_some()
+                || options.listen.is_some()
+                || show_scene
+                || options.animate
+                || animation_snapshots.is_some()
+                || options.owner_controls
+                || options.view != panel::View::Zones),
+        "Workspace bar cannot be combined with Weft or scene modes"
+    );
+    anyhow::ensure!(
+        monitor.is_none() || (workspace_mode && snapshot.is_some()),
+        "--monitor is supported only for headless workspace snapshots; native bars follow their actual output"
+    );
+    anyhow::ensure!(
+        options.hyprland_instance.is_none() || options.workspaces,
+        "--hyprland-instance requires --workspaces"
+    );
+    if let Some(path) = workspace_file {
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+        anyhow::ensure!(
+            bytes.len() <= 1024 * 1024,
+            "Workspace snapshot exceeds 1 MiB"
+        );
+        let state: WorkspaceSnapshot = serde_json::from_slice(&bytes)?;
+        state.validate()?;
+        options.workspace_snapshot = Some(state);
+    }
+    if workspace_mode {
+        options.width = 120;
+        options.height = 1000;
+        if snapshot.is_some() && options.workspaces {
+            options.workspace_snapshot =
+                Some(Instance::discover(options.hyprland_instance.as_deref())?.snapshot()?);
+        }
+    }
     let zones_mode = zones.is_some() || options.listen.is_some();
     anyhow::ensure!(
         !(zones_mode && (show_scene || options.animate || animation_snapshots.is_some())),
@@ -110,7 +174,24 @@ fn main() -> Result<()> {
     }
     if let Some(path) = snapshot {
         let gpu = pollster::block_on(Gpu::request(&Gpu::instance(), None))?;
-        let (width, height, pixels) = if let Some(snapshot) = &options.snapshot {
+        let (width, height, pixels) = if let Some(state) = &options.workspace_snapshot {
+            let monitor = monitor
+                .as_deref()
+                .or_else(|| {
+                    state
+                        .monitors
+                        .iter()
+                        .find(|m| m.focused)
+                        .map(|m| m.name.as_str())
+                })
+                .context("No focused monitor; specify --monitor for this snapshot")?;
+            let view = workspace_panel::build(state, monitor, options.width, options.height, 7)?;
+            (
+                options.width,
+                options.height,
+                render::offscreen_panel(&gpu, &view.panel, options.width, options.height)?,
+            )
+        } else if let Some(snapshot) = &options.snapshot {
             (
                 options.width,
                 options.height,

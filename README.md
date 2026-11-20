@@ -127,3 +127,22 @@ and compose in scene order. Layers render their children into transparent target
 blur uses two GPU passes. Shader uniforms are Rust data. Invalid nested WGSL is
 rejected before clearing the previous frame. Resource limits, the custom fragment
 contract, and Burl asset provenance are in [effects](docs/effects.md).
+
+## Workspace bar
+
+```sh
+cargo run -- --workspaces
+cargo run -- --workspace-state fixtures/workspaces.json --monitor DP-1 --snapshot artifacts/workspaces.png
+```
+
+The read-only vertical bar follows Hyprland workspace events on a worker thread.
+It shows fixed slots 1–7, occupancy, the active workspace on its actual output,
+other-monitor markers, and additional named/special workspaces. Empty input
+regions pass pointer events through; the bar reserves no desktop space.
+
+Compositor discovery matches the current Wayland display. An ambiguous match
+requires `--hyprland-instance SIGNATURE`. Snapshot requests are bounded; a lost
+connection is shown explicitly while reconnecting to the same instance. Monitor
+selection is available for headless snapshots; native placement determines its
+monitor. This implements the workspace indicator's state semantics; Burl's tarot
+art, app seals, popouts and workspace dispatch remain separate widget work.
