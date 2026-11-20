@@ -134,6 +134,7 @@ pub enum LayerEffect {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
+    Path(crate::path::PathData),
     Image {
         bounds: Bounds,
         image: ImageAsset,
@@ -175,6 +176,11 @@ pub struct Quad {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaintOp {
+    Path {
+        path: crate::path::PathData,
+        offset: [f32; 2],
+        clip: Bounds,
+    },
     Image {
         bounds: Bounds,
         clip: Bounds,
@@ -218,6 +224,12 @@ impl Scene {
             anyhow::ensure!(*count <= 4096, "Scene exceeds 4096 nodes");
             for node in nodes {
                 match node {
+                    Node::Path(path) => {
+                        anyhow::ensure!(
+                            path.bounds().translated(offset).valid(),
+                            "Invalid translated path bounds"
+                        );
+                    }
                     Node::Image {
                         bounds,
                         image,
@@ -316,6 +328,26 @@ impl Scene {
             Ok(())
         }
         validate(&roots, 0, &mut 0, [0.0; 2], &mut (0, 0))?;
+        fn path_budget(nodes: &[Node], totals: &mut (usize, usize)) -> anyhow::Result<()> {
+            for node in nodes {
+                match node {
+                    Node::Path(path) => {
+                        totals.0 += path.vertices().len();
+                        totals.1 += path.indices().len();
+                        anyhow::ensure!(
+                            totals.0 <= 1_048_576 && totals.1 <= 6_291_456,
+                            "Scene exceeds path mesh budget"
+                        );
+                    }
+                    Node::Group { children, .. }
+                    | Node::Clip { children, .. }
+                    | Node::Layer { children, .. } => path_budget(children, totals)?,
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        path_budget(&roots, &mut (0, 0))?;
         fn images(nodes: &[Node], seen: &mut std::collections::BTreeMap<u64, u64>) {
             for node in nodes {
                 match node {
@@ -383,6 +415,20 @@ impl Scene {
         fn visit(nodes: &[Node], offset: [f32; 2], clip: Bounds, out: &mut Vec<PaintOp>) {
             for node in nodes {
                 match node {
+                    Node::Path(path) => {
+                        if path
+                            .bounds()
+                            .translated(offset)
+                            .intersection(clip)
+                            .is_some()
+                        {
+                            out.push(PaintOp::Path {
+                                path: path.clone(),
+                                offset,
+                                clip,
+                            });
+                        }
+                    }
                     Node::Image {
                         bounds,
                         image,

@@ -25,3 +25,5 @@ pub mod channels;
 pub mod interactive;
 pub mod services;
 pub mod upower;
+
+pub mod path;

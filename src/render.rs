@@ -158,6 +158,11 @@ impl Renderer {
         self.draw_quads(gpu, view, &[], size, wgpu::LoadOp::Clear(clear));
         let mut remaining = operations.as_slice();
         while let Some(first) = remaining.first() {
+            if let PaintOp::Path { path, offset, clip } = first {
+                self.draw_path(gpu, view, path, *offset, *clip, size);
+                remaining = &remaining[1..];
+                continue;
+            }
             if matches!(first, PaintOp::Image { .. }) {
                 self.image_renderer
                     .as_ref()
@@ -176,8 +181,10 @@ impl Renderer {
             let count = remaining
                 .iter()
                 .take_while(|op| {
-                    !matches!(op, PaintOp::Surface { .. } | PaintOp::Image { .. })
-                        && matches!(op, PaintOp::Text(_)) == text_run
+                    !matches!(
+                        op,
+                        PaintOp::Surface { .. } | PaintOp::Image { .. } | PaintOp::Path { .. }
+                    ) && matches!(op, PaintOp::Text(_)) == text_run
                 })
                 .count();
             let (run, rest) = remaining.split_at(count);
@@ -227,6 +234,77 @@ impl Renderer {
             remaining = rest;
         }
         Ok(())
+    }
+
+    fn draw_path(
+        &self,
+        gpu: &Gpu,
+        view: &wgpu::TextureView,
+        path: &crate::path::PathData,
+        offset: [f32; 2],
+        clip: Bounds,
+        size: [u32; 2],
+    ) {
+        if path.indices().is_empty() {
+            return;
+        }
+        let vertices: Vec<_> = path
+            .vertices()
+            .iter()
+            .map(|vertex| Vertex {
+                position: [
+                    (vertex.position[0] + offset[0]) / size[0] as f32 * 2.0 - 1.0,
+                    1.0 - (vertex.position[1] + offset[1]) / size[1] as f32 * 2.0,
+                ],
+                color: vertex.color,
+            })
+            .collect();
+        let vertices = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Path vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let indices = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Path indices"),
+                contents: bytemuck::cast_slice(path.indices()),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let x = clip.x.max(0.0).ceil() as u32;
+        let y = clip.y.max(0.0).ceil() as u32;
+        let right = (clip.x + clip.width).min(size[0] as f32).floor() as u32;
+        let bottom = (clip.y + clip.height).min(size[1] as f32).floor() as u32;
+        if right <= x || bottom <= y {
+            return;
+        }
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Scene path"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_scissor_rect(x, y, right - x, bottom - y);
+            pass.set_vertex_buffer(0, vertices.slice(..));
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..path.indices().len() as u32, 0, 0..1);
+        }
+        gpu.queue.submit([encoder.finish()]);
     }
 
     fn draw_quads(

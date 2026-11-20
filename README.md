@@ -21,7 +21,8 @@ supply its matching GPU driver and a Vulkan ICD. On Guix System the default
 profile already exposes these. If Vulkan cannot find the NVIDIA ICD, set
 `VK_DRIVER_FILES` to the host profile's `share/vulkan/icd.d/nvidia_icd.x86_64.json`.
 
-Retained scenes support ordered Rect and Text nodes, translated Group and nested Clip nodes.
+Retained scenes support ordered Rect, Text and Path nodes, translated Group and nested Clip nodes.
+[Vector paths](docs/paths.md) use bounded cached Lyon fill/stroke meshes.
 `Scene::replace` validates an entire update before applying it; identical updates
 stay clean. Colors are linear RGBA and both native and snapshot targets use sRGB.
 

@@ -7,6 +7,8 @@ license = "GPL-3.0-or-later"
 description = "Native scene graph and Weft workspace UI"
 
 [dependencies]
+lyon_path = "1"
+lyon_tessellation = "1"
 anyhow = "1"
 zbus = "5"
 libc = "0.2"
