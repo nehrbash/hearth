@@ -372,3 +372,63 @@ fn persisted_ids_cannot_be_reused_or_duplicated() -> Result<()> {
     assert!(Server::start(f.config()).is_err());
     Ok(())
 }
+
+#[test]
+fn local_images_resolve_in_delivery_and_follow_hint_precedence() -> Result<()> {
+    let f = Fixture::new()?;
+    let server = Server::start(f.config())?;
+    let c = f.connection()?;
+    let p = proxy(&c)?;
+    let path = f.dir.join("woodland icon.png");
+    hearth::render::write_png(&path, 1, 1, &[52, 95, 38, 128])?;
+    let uri = url::Url::from_file_path(&path)
+        .expect("absolute fixture path")
+        .to_string();
+    let inline = || Value::from((1i32, 1i32, 4i32, true, 8i32, 4i32, vec![10u8, 20, 30, 255]));
+    for (hints, expected) in [
+        (
+            HashMap::from([("image-path", Value::from(uri.as_str()))]),
+            vec![52, 95, 38, 128],
+        ),
+        (
+            HashMap::from([
+                ("image-data", inline()),
+                ("image-path", Value::from(uri.as_str())),
+            ]),
+            vec![10, 20, 30, 255],
+        ),
+        (
+            HashMap::from([("icon_data", inline())]),
+            vec![52, 95, 38, 128],
+        ),
+        (
+            HashMap::from([(
+                "image-path",
+                Value::from("https://invalid.example/forbidden.png"),
+            )]),
+            vec![52, 95, 38, 128],
+        ),
+    ] {
+        let id: u32 = p.call(
+            "Notify",
+            &(
+                "test",
+                0u32,
+                uri.as_str(),
+                "local image",
+                "body",
+                Vec::<&str>::new(),
+                hints,
+                0i32,
+            ),
+        )?;
+        let snapshot = server.snapshot()?;
+        let item = snapshot
+            .active
+            .iter()
+            .find(|item| item.id == id)
+            .expect("delivered");
+        assert_eq!(item.image.as_ref().expect("resolved image").rgba, expected);
+    }
+    Ok(())
+}

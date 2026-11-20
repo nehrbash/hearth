@@ -105,7 +105,7 @@ preserving the last observation timestamp. The publication budget is 120 KiB.
 
 ## Automated checks
 
-The recorded final check run passed strict Clippy, 212 Rust tests including GPU
+The recorded final check run passed strict Clippy, 220 Rust tests including GPU
 snapshot comparisons, and ten Guile suites: activity export, service export,
 UI client, Weft watches, mirror, Bluetooth UI, Notifications UI, Audio UI, Tray UI and PAM UI. Focused checks cover atomic invalid updates,
 producer ownership, disconnect/reconnect, more than 64 epochs, optional fields,
@@ -178,3 +178,25 @@ on clean shutdown. No authentication attempt or compositor lock change occurred.
 The [security review](pam-security.md) records the checked boundary and fixes;
 [PAM usage](pam.md) documents the ASCII-only keyboard and separate session-lock
 integration. ADR-011 remains Proposed for owner review.
+
+
+## Notification desktop integration
+
+Three fake-Hyprland tests cover visible normal workspaces (including negative
+named IDs), maximized/hidden/special exclusions, fragmented events, disconnect,
+reconnect and suppression that manual controls cannot override. Source loss
+suppresses popups and reports unavailability; a valid observation restores the
+automatic state. Existing worker shutdown fixtures disable compositor discovery.
+
+Four image-resolution tests cover inline precedence, alpha, local file URIs,
+private theme paths, remote-resource refusal and malformed/oversized/FIFO
+fallback. A private-bus delivery test verifies modern image hints override local
+references, which override deprecated icon_data. Four Scheme-generated notification
+PNGs were compared exactly and inspected at 1×, including automatic suppression.
+
+The [native integration evidence](../artifacts/notifications-integration-proof.json)
+records a local PNG reaching the 720×760 panel, live read-only Hyprland discovery,
+sanitized Weft publication and clean controller/renderer/server teardown. The
+notification bus was private; no host notification ownership or compositor
+mutation occurred. The implementation review found no blocking issues.
+ADR-012 remains Proposed for owner review.

@@ -83,6 +83,10 @@ pub struct Snapshot {
     pub revision: u64,
     pub dnd: bool,
     pub fullscreen: bool,
+    pub fullscreen_manual: bool,
+    pub fullscreen_automatic: bool,
+    pub fullscreen_source: String,
+    pub fullscreen_error: Option<String>,
     pub active: Vec<Notification>,
     pub history: Vec<Notification>,
 }
@@ -214,6 +218,10 @@ fn load(path: &Path) -> Result<State> {
             revision: 0,
             dnd: disk.dnd,
             fullscreen: false,
+            fullscreen_manual: false,
+            fullscreen_automatic: false,
+            fullscreen_source: "disabled".into(),
+            fullscreen_error: None,
             active: vec![],
             history,
         },
@@ -296,6 +304,42 @@ fn persist(path: &Path, state: &State) -> Result<()> {
     result
 }
 impl Core {
+    fn automatic_fullscreen(&self, observation: Result<bool>) -> Result<()> {
+        let (automatic, source, error) = match observation {
+            Ok(value) => (value, "available", None),
+            Err(_) => (
+                true,
+                "unavailable",
+                Some("Compositor fullscreen state unavailable".to_string()),
+            ),
+        };
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Notification state poisoned"))?;
+        if state.snapshot.fullscreen_automatic == automatic
+            && state.snapshot.fullscreen_source == source
+            && state.snapshot.fullscreen_error == error
+        {
+            return Ok(());
+        }
+        let revision = state
+            .snapshot
+            .revision
+            .checked_add(1)
+            .context("Notification revision exhausted")?;
+        state.snapshot.fullscreen_automatic = automatic;
+        state.snapshot.fullscreen_source = source.into();
+        state.snapshot.fullscreen_error = error;
+        state.snapshot.fullscreen = automatic || state.snapshot.fullscreen_manual;
+        if state.snapshot.fullscreen {
+            for n in &mut state.snapshot.active {
+                n.popup = false;
+            }
+        }
+        state.snapshot.revision = revision;
+        Ok(())
+    }
     fn snapshot(&self) -> Result<Snapshot> {
         Ok(self
             .state
@@ -398,8 +442,9 @@ impl Core {
                     }
                 }
                 Control::SetFullscreen { value } => {
-                    s.snapshot.fullscreen = *value;
-                    if *value {
+                    s.snapshot.fullscreen_manual = *value;
+                    s.snapshot.fullscreen = *value || s.snapshot.fullscreen_automatic;
+                    if s.snapshot.fullscreen {
                         for n in &mut s.snapshot.active {
                             n.popup = false;
                         }
@@ -499,11 +544,7 @@ fn hint_text(h: &HashMap<String, OwnedValue>, name: &str) -> Result<Option<Strin
         .transpose()
 }
 fn image_hint(h: &HashMap<String, OwnedValue>) -> Result<Option<Image>> {
-    let Some(value) = h
-        .get("image-data")
-        .or_else(|| h.get("image_data"))
-        .or_else(|| h.get("icon_data"))
-    else {
+    let Some(value) = h.get("image-data").or_else(|| h.get("image_data")) else {
         return Ok(None);
     };
     let (width, height, stride, alpha, bits, channels, data): (
@@ -637,6 +678,18 @@ impl Interface {
                 popup_deadline: Some(now + Duration::from_millis(5000)),
             };
             validate_record(&n)?;
+            n.image = crate::notification_images::resolve(
+                n.image.as_ref(),
+                n.image_path.as_deref(),
+                &n.app_icon,
+            );
+            if n.image.is_none()
+                && let Some(value) = hints.get("icon_data")
+            {
+                let legacy = HashMap::from([("image-data".to_string(), value.try_clone()?)]);
+                n.image = image_hint(&legacy)?;
+            }
+            validate_record(&n)?;
             self.0.change(|s| {
                 let existing = s
                     .snapshot
@@ -692,16 +745,36 @@ pub struct Server {
     core: Core,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    fullscreen_feed: Option<crate::notification_fullscreen::Feed>,
     _socket: SocketFile,
 }
 impl Server {
     pub fn start(config: Config) -> Result<Self> {
+        Self::start_inner(config, None)
+    }
+    pub fn start_with_fullscreen(
+        config: Config,
+        source: crate::notification_fullscreen::Source,
+    ) -> Result<Self> {
+        Self::start_inner(config, Some(source))
+    }
+    fn start_inner(
+        config: Config,
+        source: Option<crate::notification_fullscreen::Source>,
+    ) -> Result<Self> {
         ensure!(
             config.socket != config.state_file,
             "Socket and state paths must differ"
         );
         private_parent(&config.socket)?;
-        let state = load(&config.state_file)?;
+        let mut state = load(&config.state_file)?;
+        if source.is_some() {
+            state.snapshot.fullscreen = true;
+            state.snapshot.fullscreen_automatic = true;
+            state.snapshot.fullscreen_source = "unavailable".into();
+            state.snapshot.fullscreen_error =
+                Some("Compositor fullscreen state unavailable".into());
+        }
         let connection = match config.bus_address.as_deref() {
             Some(address) => Builder::address(address)?,
             None => Builder::session()?,
@@ -742,12 +815,27 @@ impl Server {
                 }
             });
         match worker {
-            Ok(worker) => Ok(Self {
-                core,
-                stop,
-                worker: Some(worker),
-                _socket: socket_file,
-            }),
+            Ok(worker) => {
+                let mut server = Self {
+                    core,
+                    stop,
+                    worker: Some(worker),
+                    fullscreen_feed: None,
+                    _socket: socket_file,
+                };
+                if let Some(source) = source {
+                    let core = server.core.clone();
+                    server.fullscreen_feed = Some(crate::notification_fullscreen::Feed::start(
+                        source,
+                        move |observation| {
+                            if core.automatic_fullscreen(observation).is_err() {
+                                eprintln!("Notification fullscreen state update failed");
+                            }
+                        },
+                    )?);
+                }
+                Ok(server)
+            }
             Err(error) => {
                 let _ = core.bus.object_server().remove::<Interface, _>(OBJECT);
                 Err(error.into())
@@ -765,6 +853,7 @@ impl Server {
 }
 impl Drop for Server {
     fn drop(&mut self) {
+        self.fullscreen_feed.take();
         self.stop.store(true, Ordering::Relaxed);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

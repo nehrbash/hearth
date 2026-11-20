@@ -356,6 +356,7 @@
     ("image" . (("kind" . "rgba") ("width" . 32) ("height" . 16)))))
 (define notification-state
   `(("epoch" . "notification-server") ("revision" . 5) ("dnd" . #f) ("fullscreen" . #f)
+    ("fullscreen_manual" . #f) ("fullscreen_automatic" . #f) ("fullscreen_source" . "available") ("fullscreen_error" . null)
     ("active" . ,(vector preview)) ("history" . #()) ("withheld_transient_count" . 3) ("dropped_count" . 0)))
 (define (notification-envelope value)
   (replace (replace envelope "service" "notifications") "state" value))
@@ -503,3 +504,19 @@
   '(("version" . 1) ("service" . "pam") ("status" . "unavailable") ("observed_at_ms" . 42) ("state" . null) ("error" . "secret")))))
   "PAM free-text error accepted")
 (display "PAM service exporter tests passed\n")
+(define automatic-notifications
+  (replace (replace notification-state "fullscreen" #t) "fullscreen_automatic" #t))
+(define failed-notifications
+  (replace (replace automatic-notifications "fullscreen_source" "unavailable") "fullscreen_error"
+           "Fullscreen source unavailable; safe suppression enabled"))
+(check (decode (notification-envelope automatic-notifications)) "Automatic suppression observation rejected")
+(check (decode (notification-envelope failed-notifications)) "Safe fallback observation rejected")
+(for-each (lambda (bad)
+  (check (fails? (lambda () (decode (notification-envelope bad)))) "Inconsistent notification fullscreen observation accepted"))
+  (list (replace notification-state "fullscreen" #t)
+        (replace automatic-notifications "fullscreen_source" "disabled")
+        (replace notification-state "fullscreen_source" "unavailable")
+        (replace notification-state "fullscreen_error" "unexpected")
+        (replace failed-notifications "fullscreen_error" "SECRET_BACKEND_DIAGNOSTIC")
+        (replace (replace failed-notifications "fullscreen_automatic" #f) "fullscreen" #f)))
+(display "Notification fullscreen exporter tests passed\n")

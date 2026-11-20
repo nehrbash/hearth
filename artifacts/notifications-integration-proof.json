@@ -1,0 +1,22 @@
+{
+  "channel": "notifications",
+  "connected": true,
+  "sensitive": true,
+  "node_count": 34,
+  "native_size": [
+    720,
+    760
+  ],
+  "private_bus_active_count": 1,
+  "host_bus_name_requests": 0,
+  "weft_publication_available": true,
+  "fullscreen_source": "available",
+  "automatic_suppression": false,
+  "manual_suppression": false,
+  "local_image_rendered": true,
+  "host_compositor_mutations": 0,
+  "controller_exit": 0,
+  "renderer_exit": 0,
+  "server_exit": 0,
+  "sockets_removed": true
+}

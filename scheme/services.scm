@@ -225,7 +225,7 @@
              "Duplicate Bluetooth device paths")))
 
 (define (validate-notifications state)
-  (require (object-keys? state '("epoch" "revision" "dnd" "fullscreen" "active" "history"
+  (require (object-keys? state '("epoch" "revision" "dnd" "fullscreen" "fullscreen_manual" "fullscreen_automatic" "fullscreen_source" "fullscreen_error" "active" "history"
                                  "withheld_transient_count" "dropped_count")) "Unexpected notification observation fields")
   (require (and (identifier? (assoc-ref state "epoch") 256)
                 (integer-range? (assoc-ref state "revision") 0 18446744073709551615)
@@ -234,6 +234,15 @@
                 (integer-range? (assoc-ref state "dropped_count") 0 200)
                 (vector? (assoc-ref state "active")) (vector? (assoc-ref state "history")))
            "Invalid notification observation")
+  (let ((manual (assoc-ref state "fullscreen_manual")) (automatic (assoc-ref state "fullscreen_automatic"))
+        (source (assoc-ref state "fullscreen_source")) (failure (assoc-ref state "fullscreen_error")))
+    (require (and (boolean? manual) (boolean? automatic)
+                  (eq? (assoc-ref state "fullscreen") (or manual automatic))
+                  (member source '("disabled" "available" "unavailable"))
+                  (if (equal? source "unavailable")
+                      (and automatic (equal? failure "Fullscreen source unavailable; safe suppression enabled"))
+                      (eq? failure 'null))
+                  (or (not (equal? source "disabled")) (not automatic))) "Invalid notification fullscreen observation"))
   (let ((records (append (vector->list (assoc-ref state "active")) (vector->list (assoc-ref state "history")))))
     (require (<= (length records) 32) "Notification previews exceed 32 records")
     (for-each
@@ -502,10 +511,13 @@
 
 (define (notification-rows state)
   (append
-    (list (list "Preview active / history" (format #f "~a / ~a" (vector-length (assoc-ref state "active")) (vector-length (assoc-ref state "history"))))
+    (list (list "Fullscreen source" (if (equal? (assoc-ref state "fullscreen_source") "unavailable")
+                                       "Unavailable (safe)" (assoc-ref state "fullscreen_source")))
+          (list "DND / fullscreen" (format #f "~a / ~a" (if (assoc-ref state "dnd") "On" "Off") (if (assoc-ref state "fullscreen") "On" "Off")))
+          (list "Manual / automatic" (format #f "~a / ~a" (if (assoc-ref state "fullscreen_manual") "On" "Off") (if (assoc-ref state "fullscreen_automatic") "On" "Off")))
+          (list "Preview active / history" (format #f "~a / ~a" (vector-length (assoc-ref state "active")) (vector-length (assoc-ref state "history"))))
           (list "Transient withheld" (number->string (assoc-ref state "withheld_transient_count")))
-          (list "Preview omitted" (number->string (assoc-ref state "dropped_count")))
-          (list "DND / fullscreen" (format #f "~a / ~a" (if (assoc-ref state "dnd") "On" "Off") (if (assoc-ref state "fullscreen") "On" "Off"))))
+          (list "Preview omitted" (number->string (assoc-ref state "dropped_count"))))
     (map (lambda (record) (list (assoc-ref record "app_name") (assoc-ref record "summary")))
          (append (vector->list (assoc-ref state "active")) (vector->list (assoc-ref state "history"))))))
 

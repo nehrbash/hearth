@@ -22,6 +22,7 @@
 (define history
  (vector (change (change (change (change record 'id 5) 'actionable #f) 'popup #f) 'closed_reason 2)))
 (define snapshot `((epoch . "fixture") (revision . 5) (dnd . #f) (fullscreen . #f)
+                  (fullscreen_manual . #f) (fullscreen_automatic . #f) (fullscreen_source . "available") (fullscreen_error . null)
                   (active . ,records) (history . ,history)))
 (define model (make-notifications-ui))
 (define (feed value)
@@ -33,6 +34,11 @@
  (notifications-activate! model "history" (lambda _ #t)))
 (when (equal? name "notifications-dnd")
  (feed (change (change snapshot 'dnd #t) 'active
+   (list->vector (map (lambda (item) (change item 'popup #f)) (vector->list records)))))
+ (notifications-nodes model)
+ (notifications-activate! model "popups" (lambda _ #t)))
+(when (equal? name "notifications-fullscreen")
+ (feed (change (change (change snapshot 'fullscreen #t) 'fullscreen_automatic #t) 'active
    (list->vector (map (lambda (item) (change item 'popup #f)) (vector->list records)))))
  (notifications-nodes model)
  (notifications-activate! model "popups" (lambda _ #t)))

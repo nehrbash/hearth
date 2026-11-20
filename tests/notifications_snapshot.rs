@@ -9,6 +9,7 @@ fn notifications_active_history_and_dnd_match_snapshots() -> Result<()> {
         "notifications",
         "notifications-history",
         "notifications-dnd",
+        "notifications-fullscreen",
     ] {
         let output = std::process::Command::new("guile")
             .args([

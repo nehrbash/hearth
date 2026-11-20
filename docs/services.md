@@ -117,8 +117,11 @@ nor queues for later takeover. `--bus-address ADDRESS` selects a private test bu
 Run `guile -L scheme scheme/notifications-ui.scm RENDERER CONTROL` for the native
 720×760 panel on channel `notifications`. Popups, active notifications and history
 have separate counts and paging. Controls include actions, dismissal, clearing
-groups/history, DND and an explicit fullscreen-suppression switch. Fullscreen
-state is not automatically connected to Hyprland yet. Mutation keys bind the
+groups/history, DND and manual popup pause. A separate native worker follows
+Hyprland events and checks active normal workspaces; maximized and hidden-workspace
+clients do not count as fullscreen. Manual pause adds to automatic suppression.
+An unavailable compositor source conservatively suppresses popups and is shown
+explicitly in the panel and Weft. Use `--no-hyprland-fullscreen` on other desktops. Mutation keys bind the
 server generation and revision; rejected or uncertain actions are never retried.
 
 A five-second popup lifetime hides the popup without expiring an active item.
@@ -129,8 +132,12 @@ have no actionable callbacks. Transient records are not persisted.
 Run `guile -L scheme scheme/notifications-ui.scm --publish CONTROL` separately
 for Weft observations. It omits transient records, image bytes and image paths,
 limits text and record counts, and exposes withheld/overflow counts. The native
-channel is sensitive and excluded from generic scene mirroring. Raw RGBA hints
-render as bounded thumbnails; file paths and themed icons are not resolved.
+channel is sensitive and excluded from generic scene mirroring. Image precedence
+is RGBA image-data, image-path, app_icon, then deprecated icon_data. Absolute
+local paths, local file URIs and themed names use the shared tray icon loader:
+256 KiB encoded files, bounded PNG/SVG decoding and at most 64×64 output. Missing
+or invalid references fall back; remote URLs are never fetched. Inline RGBA
+keeps its existing 512×512 bound and is downsampled for the scene.
 Only the implemented `body` and `actions` capabilities are advertised.
 
 Private-bus tests cover name refusal, replacement, stale actions, signals,

@@ -53,6 +53,7 @@ impl Fixture {
     fn spawn(&self) -> Result<Process> {
         Ok(Process(
             Command::new(env!("CARGO_BIN_EXE_hearth-notifications"))
+                .arg("--no-hyprland-fullscreen")
                 .arg("--socket")
                 .arg(self.dir.join("control.sock"))
                 .arg("--state")

@@ -220,7 +220,7 @@ fn wait_fd(fd: RawFd, events: i16, deadline: Instant) -> io::Result<()> {
     }
 }
 
-fn connect(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
+pub(crate) fn connect(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
     let bytes = path.as_os_str().as_bytes();
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     if bytes.len() >= address.sun_path.len() || bytes.contains(&0) {
@@ -265,7 +265,7 @@ fn connect(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
     Ok(stream)
 }
 
-fn request(path: &Path, command: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn request(path: &Path, command: &[u8]) -> Result<Vec<u8>> {
     let deadline = Instant::now() + DEADLINE;
     let mut stream = connect(path, deadline)?;
     let mut written = 0;
