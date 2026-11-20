@@ -20,3 +20,5 @@ pub mod binding;
 pub mod builder;
 pub mod reactive;
 pub mod scene_data;
+
+pub mod services;

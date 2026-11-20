@@ -93,6 +93,9 @@ terminal lease holders. Missing host information is explicit; lease expiry is
 unavailable in the current Weft API. Notices cover current watch subscribers
 within Weft's bounded history. An inspection warning is not an empty inventory.
 The snapshot carries separate generations for trusted activity and owner effects.
+Previewed collections report hidden rows with `+N more`; diagnostics preserve
+relevant failures without displaying raw Scheme records. Run exporter checks with
+`guile -L scheme tests/activity_export.scm`.
 
 ## Owner decisions
 
@@ -165,3 +168,8 @@ scenes. Signals coalesce, unchanged values stay clean, and disposing an owner
 releases its computations. A panicking computation is disposed before unwinding.
 The fixture proves identical Scheme/Rust trees for status, metric and session
 widgets; two PNGs verify a signal-driven update without manual invalidation.
+
+## Host services
+
+The [service adapter](docs/services.md) publishes read-only Hyprland monitor and
+workspace state to Weft, independently of the frame loop.
