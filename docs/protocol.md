@@ -72,7 +72,7 @@ invalid. Siblings paint in ascending `order`, preserving array order for ties.
 
 | Field | Meaning and default |
 | --- | --- |
-| `key`, `kind` | Required identity and `rect`, `text`, or `group` |
+| `key`, `kind` | Required identity and `rect`, `text`, `group`, or `image` |
 | `parent` | Parent key, default null |
 | `order` | Signed 32-bit ordering value, default 0 |
 | `bounds` | Local `[x,y,width,height]`, default `[0,0,0,0]` |
@@ -187,6 +187,16 @@ restore available state.
 Channels marked `data.sensitive:true` are excluded from Weft mirroring. The
 mirror publishes an unavailable summary containing identity and reason, without
 node text or semantic data. Pairing controllers use this for ephemeral prompts.
+
+## Interactive images
+
+Image nodes require `image:{width,height,rgba:[...]}` containing RGBA8 bytes.
+Dimensions are 1–256 pixels with exactly `width * height * 4` bytes. Channels
+allow at most 1 MiB decoded pixels and 128 distinct image assets; the 1 MiB JSON
+message limit still applies. Unchanged pixel data reuses native texture identity.
+Bounds scale the image; parent offsets and sibling ordering apply. Color alpha
+sets opacity; RGB does not tint pixels. Validation and asset construction occur
+outside the frame loop. No node loads files or URLs.
 
 ## Legacy v1
 

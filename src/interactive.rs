@@ -1,12 +1,12 @@
 use crate::{
     animation::{Easing, FrameChange, Prop, Rgba, Seconds, Transition},
-    scene::{Bounds, Node, Scene},
+    scene::{Bounds, ImageAsset, Node, Scene},
     text::Label,
 };
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -14,6 +14,31 @@ enum Kind {
     Rect,
     Text,
     Group,
+    Image,
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+struct ImageDefinition {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+impl ImageDefinition {
+    fn validate(&self) -> Result<usize> {
+        ensure!(
+            (1..=256).contains(&self.width) && (1..=256).contains(&self.height),
+            "Image dimensions must be 1..256"
+        );
+        let bytes = self
+            .width
+            .checked_mul(self.height)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| anyhow::anyhow!("Image size overflow"))? as usize;
+        ensure!(
+            self.rgba.len() == bytes,
+            "Image RGBA byte length does not match dimensions"
+        );
+        Ok(bytes)
+    }
 }
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct Style {
@@ -38,6 +63,8 @@ fn duration() -> u32 {
 struct Definition {
     key: String,
     kind: Kind,
+    #[serde(default)]
+    image: Option<ImageDefinition>,
     #[serde(default)]
     parent: Option<String>,
     #[serde(default)]
@@ -73,15 +100,44 @@ fn valid_color(color: &[f32; 4]) -> bool {
         .iter()
         .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
 }
-fn parse(nodes: &[Value]) -> Result<Vec<Definition>> {
-    ensure!(nodes.len() <= 4096, "Interactive scene exceeds 4096 nodes");
-    let nodes: Vec<Definition> = nodes
+fn parse(values: &[Value]) -> Result<Vec<Definition>> {
+    ensure!(values.len() <= 4096, "Interactive scene exceeds 4096 nodes");
+    let nodes: Vec<Definition> = values
         .iter()
         .cloned()
         .map(serde_json::from_value)
         .collect::<std::result::Result<_, _>>()?;
     let mut keys = HashMap::new();
+    let mut image_bytes = 0usize;
+    let mut unique_images = HashSet::new();
     for (index, node) in nodes.iter().enumerate() {
+        if node.kind == Kind::Image {
+            let image = node
+                .image
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Image node requires image data"))?;
+            unique_images.insert(image);
+            ensure!(
+                unique_images.len() <= 128,
+                "Interactive scene exceeds 128 unique images"
+            );
+            image_bytes = image_bytes
+                .checked_add(image.validate()?)
+                .ok_or_else(|| anyhow::anyhow!("Image budget overflow"))?;
+            ensure!(
+                image_bytes <= 1024 * 1024,
+                "Interactive images exceed 1 MiB decoded budget"
+            );
+            ensure!(
+                node.bounds[2] > 0.0 && node.bounds[3] > 0.0,
+                "Image display bounds must be positive"
+            );
+        } else {
+            ensure!(
+                values[index].get("image").is_none(),
+                "Image field requires image kind"
+            );
+        }
         ensure!(
             !node.key.is_empty() && node.key.len() <= 128,
             "Invalid node key"
@@ -157,15 +213,17 @@ pub fn validate_nodes(nodes: &[Value]) -> Result<()> {
 #[derive(Clone)]
 struct Retained {
     definition: Definition,
+    image: Option<ImageAsset>,
     color: Prop<Rgba>,
     x: Prop<f64>,
     y: Prop<f64>,
 }
 impl Retained {
-    fn new(definition: Definition) -> Result<Self> {
+    fn new(definition: Definition, image: Option<ImageAsset>) -> Result<Self> {
         let (color, offset) = style(&definition, false, false);
         Ok(Self {
             definition,
+            image,
             color: Prop::new(Rgba(color.map(f64::from)))?,
             x: Prop::new(f64::from(offset[0]))?,
             y: Prop::new(f64::from(offset[1]))?,
@@ -269,9 +327,30 @@ impl InteractiveScene {
             .iter()
             .map(|n| (n.definition.key.as_str(), n))
             .collect();
+        let previous_images: HashMap<_, _> = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.definition.image.as_ref().zip(node.image.as_ref()))
+            .collect();
+        let mut images: HashMap<ImageDefinition, ImageAsset> = HashMap::new();
         let mut changed = self.nodes.len() != definitions.len();
         let mut retained = Vec::with_capacity(definitions.len());
         for (index, definition) in definitions.into_iter().enumerate() {
+            let image = if let Some(data) = &definition.image {
+                if let Some(image) = images.get(data) {
+                    Some(image.clone())
+                } else {
+                    let image = if let Some(old) = previous_images.get(data) {
+                        (*old).clone()
+                    } else {
+                        ImageAsset::from_rgba(data.width, data.height, data.rgba.clone())?
+                    };
+                    images.insert(data.clone(), image.clone());
+                    Some(image)
+                }
+            } else {
+                None
+            };
             changed |= self
                 .nodes
                 .get(index)
@@ -279,9 +358,10 @@ impl InteractiveScene {
             let mut node = if let Some(old) = previous.get(definition.key.as_str()) {
                 let mut node = (*old).clone();
                 node.definition = definition;
+                node.image = image;
                 node
             } else {
-                Retained::new(definition)?
+                Retained::new(definition, image)?
             };
             node.retarget(
                 hover.as_deref() == Some(&node.definition.key),
@@ -335,7 +415,7 @@ impl InteractiveScene {
             parent: Option<&str>,
             offset: [f32; 2],
             output: &mut Vec<Node>,
-        ) {
+        ) -> Result<()> {
             for &index in scene.children(parent) {
                 let node = &scene.nodes[index];
                 let definition = &node.definition;
@@ -356,12 +436,30 @@ impl InteractiveScene {
                         definition.font_size,
                         color.map(|v| (v * 255.0).round() as u8),
                     ))),
-                    Kind::Group => collect(scene, Some(&definition.key), offset, output),
+                    Kind::Group => collect(scene, Some(&definition.key), offset, output)?,
+                    Kind::Image => {
+                        let image = node
+                            .image
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("Missing retained image"))?;
+                        output.push(Node::Image {
+                            bounds: Bounds::new(x + offset[0], y + offset[1], width, height),
+                            image: image.clone(),
+                            source: Bounds::new(
+                                0.0,
+                                0.0,
+                                image.width() as f32,
+                                image.height() as f32,
+                            ),
+                            opacity: color[3],
+                        });
+                    }
                 }
             }
+            Ok(())
         }
         let mut output = Vec::new();
-        collect(self, None, [0.0; 2], &mut output);
+        collect(self, None, [0.0; 2], &mut output)?;
         Scene::new(output)
     }
     fn hit(&self, x: f32, y: f32) -> Option<String> {
@@ -612,6 +710,74 @@ mod tests {
         assert!(scene.is_active());
         scene.advance(Seconds::new(0.15)?);
         assert!(!scene.is_active());
+        Ok(())
+    }
+    fn image_node() -> Value {
+        json!({"key":"icon","kind":"image","bounds":[0,0,16,16],"image":{"width":1,"height":1,"rgba":[255,0,0,128]}})
+    }
+    #[test]
+    fn images_validate_atomically_and_reuse_native_assets() -> Result<()> {
+        let mut scene = InteractiveScene::new();
+        let mut node = image_node();
+        scene.apply(&[node.clone()])?;
+        scene.take_damage();
+        let original = scene.nodes[0].image.as_ref().expect("image").id();
+        assert!(!scene.apply(&[node.clone()])?);
+        node["offset"] = json!([4, 8]);
+        scene.apply(&[node.clone()])?;
+        assert_eq!(original, scene.nodes[0].image.as_ref().expect("image").id());
+        let mut other = node.clone();
+        other["key"] = json!("copy");
+        scene.apply(&[node.clone(), other])?;
+        assert_eq!(original, scene.nodes[1].image.as_ref().expect("image").id());
+        scene.take_damage();
+        for (field, value) in [
+            ("width", json!(0)),
+            ("width", json!(257)),
+            ("width", json!(u32::MAX)),
+            ("rgba", json!([255, 0, 0])),
+            ("rgba", json!([256, 0, 0, 255])),
+        ] {
+            let mut bad = node.clone();
+            bad["image"][field] = value;
+            assert!(scene.apply(&[bad]).is_err());
+            assert_eq!(scene.nodes.len(), 2);
+            assert_eq!(original, scene.nodes[0].image.as_ref().expect("image").id());
+            assert!(!scene.take_damage());
+        }
+        for bad in [
+            json!({"key":"x","kind":"image","bounds":[0,0,2,2]}),
+            json!({"key":"x","kind":"rect","image":null}),
+            json!({"key":"x","kind":"text","image":{"width":1,"height":1,"rgba":[0,0,0,0]}}),
+        ] {
+            assert!(scene.apply(&[bad]).is_err());
+        }
+        node["image"]["future"] = json!(true);
+        validate_nodes(&[node])?;
+        Ok(())
+    }
+    #[test]
+    fn decoded_images_have_an_aggregate_budget() {
+        let pixels = vec![0u8; 256 * 256 * 4];
+        let nodes:Vec<_>=(0..5).map(|i|json!({"key":format!("image-{i}"),"kind":"image","bounds":[0,0,1,1],"image":{"width":256,"height":256,"rgba":pixels}})).collect();
+        assert!(validate_nodes(&nodes[..4]).is_ok());
+        assert!(validate_nodes(&nodes).is_err());
+    }
+    #[test]
+    fn unique_image_limit_matches_native_scene_budget() -> Result<()> {
+        let mut nodes:Vec<_>=(0..129).map(|i|json!({"key":format!("icon-{i}"),"kind":"image","bounds":[0,0,1,1],"image":{"width":1,"height":1,"rgba":[i,0,0,255]}})).collect();
+        assert!(validate_nodes(&nodes).is_err());
+        let mut scene = InteractiveScene::new();
+        scene.apply(&nodes[..128])?;
+        scene.scene()?;
+        assert!(scene.apply(&nodes).is_err());
+        assert_eq!(scene.nodes.len(), 128);
+        for node in &mut nodes {
+            node["image"]["rgba"] = json!([0, 0, 0, 255]);
+        }
+        scene.apply(&nodes)?;
+        scene.scene()?;
+        assert_eq!(scene.nodes.len(), 129);
         Ok(())
     }
 }

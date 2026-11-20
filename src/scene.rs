@@ -46,10 +46,22 @@ impl ImageAsset {
         ];
         let frame = reader.next_frame(&mut rgba)?;
         rgba.truncate(frame.buffer_size());
+        Self::from_rgba(frame.width, frame.height, rgba)
+    }
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> anyhow::Result<Self> {
+        let pixels = u64::from(width) * u64::from(height);
+        anyhow::ensure!(
+            width > 0 && height > 0 && width <= 4096 && height <= 4096 && pixels <= 4 * 1024 * 1024,
+            "Image exceeds pixel budget"
+        );
+        anyhow::ensure!(
+            rgba.len() as u64 == pixels * 4,
+            "Image RGBA length mismatch"
+        );
         Ok(Self(Arc::new(ImagePixels {
             id: NEXT_IMAGE.fetch_add(1, Ordering::Relaxed),
-            width: frame.width,
-            height: frame.height,
+            width,
+            height,
             rgba,
         })))
     }
@@ -588,6 +600,10 @@ mod tests {
         let image = ImageAsset::from_png(&png)?;
         assert_eq!(image, image.clone());
         assert!(ImageAsset::from_png(b"not a PNG").is_err());
+        assert!(ImageAsset::from_rgba(0, 1, vec![]).is_err());
+        assert!(ImageAsset::from_rgba(u32::MAX, u32::MAX, vec![]).is_err());
+        assert!(ImageAsset::from_rgba(2, 1, vec![0; 7]).is_err());
+        assert!(ImageAsset::from_rgba(2, 1, vec![0; 8]).is_ok());
         let valid = Node::Image {
             bounds: Bounds::new(0.0, 0.0, 20.0, 10.0),
             image: image.clone(),

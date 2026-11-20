@@ -106,3 +106,33 @@ The [persistent Bluetooth service and native controller](bluetooth.md) provide
 BlueZ observations, discovery ownership, explicit controls and pairing prompts.
 Use `hearth-bluetooth --observe` for read-only Weft publication; normal mode
 accepts typed UI commands and keeps credentials out of shared state.
+
+## Notifications
+
+`hearth-notifications --socket CONTROL --state HISTORY` starts an independent
+notification server. Both paths require private, owned parent directories. It
+requests the standard bus name only when free: it neither replaces an incumbent
+nor queues for later takeover. `--bus-address ADDRESS` selects a private test bus.
+
+Run `guile -L scheme scheme/notifications-ui.scm RENDERER CONTROL` for the native
+720×760 panel on channel `notifications`. Popups, active notifications and history
+have separate counts and paging. Controls include actions, dismissal, clearing
+groups/history, DND and an explicit fullscreen-suppression switch. Fullscreen
+state is not automatically connected to Hyprland yet. Mutation keys bind the
+server generation and revision; rejected or uncertain actions are never retried.
+
+A five-second popup lifetime hides the popup without expiring an active item.
+Client expiry and dismissal emit closure reasons; resident actions preserve the
+item. History is bounded and atomically saved with mode 0600. Restored records
+have no actionable callbacks. Transient records are not persisted.
+
+Run `guile -L scheme scheme/notifications-ui.scm --publish CONTROL` separately
+for Weft observations. It omits transient records, image bytes and image paths,
+limits text and record counts, and exposes withheld/overflow counts. The native
+channel is sensitive and excluded from generic scene mirroring. Raw RGBA hints
+render as bounded thumbnails; file paths and themed icons are not resolved.
+Only the implemented `body` and `actions` capabilities are advertised.
+
+Private-bus tests cover name refusal, replacement, stale actions, signals,
+expiry, persistence, slow subscribers, restart and shutdown. They never acquire
+the notification name on the user's session bus.

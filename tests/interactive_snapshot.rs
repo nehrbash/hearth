@@ -66,3 +66,31 @@ fn toggle_wire_state_and_local_press_produce_distinct_frames() -> Result<()> {
     assert!(!scene.is_active());
     Ok(())
 }
+
+#[test]
+fn image_pixels_preserve_alpha_group_offsets_and_painter_order() -> Result<()> {
+    let gpu = pollster::block_on(Gpu::request(&Gpu::instance(), None))?;
+    let image =
+        json!({"width":2,"height":2,"rgba":[255,0,0,255,0,255,0,128,0,0,255,255,255,255,255,0]});
+    let nodes = vec![
+        json!({"key":"background","kind":"rect","bounds":[0,0,400,240],"color":[0.04,0.06,0.1,1]}),
+        json!({"key":"title","kind":"text","bounds":[24,16,360,32],"text":"RGBA images from Scheme","font_size":24}),
+        json!({"key":"group","kind":"group","offset":[40,64]}),
+        json!({"key":"icon","kind":"image","parent":"group","bounds":[0,0,96,96],"image":image}),
+        json!({"key":"overlay","kind":"rect","parent":"group","order":1,"bounds":[0,38,96,8],"color":[1,1,0,1]}),
+        json!({"key":"copy","kind":"image","bounds":[220,64,96,96],"image":image,"color":[1,1,1,0.5]}),
+        json!({"key":"hint","kind":"text","bounds":[24,190,360,32],"text":"Translated, overlaid, and half opacity","font_size":18}),
+    ];
+    let mut scene = InteractiveScene::new();
+    scene.apply(&nodes)?;
+    let pixels = pixels(&gpu, &scene)?;
+    let pixel = |x: usize, y: usize| &pixels[(y * 400 + x) * 4..(y * 400 + x) * 4 + 4];
+    assert_eq!(pixel(45, 69), &[255, 0, 0, 255]);
+    assert_eq!(pixel(45, 105), &[255, 255, 0, 255]);
+    assert_eq!(pixel(131, 155), pixel(0, 0));
+    assert_eq!(pixel(20, 69), pixel(0, 0));
+    assert_ne!(pixel(225, 69), pixel(45, 69));
+    assert!(pixel(225, 69)[0] > pixel(0, 0)[0]);
+    snapshot("image", &pixels)?;
+    Ok(())
+}

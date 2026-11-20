@@ -105,11 +105,25 @@ preserving the last observation timestamp. The publication budget is 120 KiB.
 
 ## Automated checks
 
-The recorded final check run passed strict Clippy, 129 Rust tests including GPU
-snapshot comparisons, and five Guile suites: activity export, service export,
-UI client, Weft watches, and mirror. Focused checks cover atomic invalid updates,
+The recorded final check run passed strict Clippy, 175 Rust tests including GPU
+snapshot comparisons, and seven Guile suites: activity export, service export,
+UI client, Weft watches, mirror, Bluetooth UI and Notifications UI. Focused checks cover atomic invalid updates,
 producer ownership, disconnect/reconnect, more than 64 epochs, optional fields,
 partial input, bounded clients/queues, input routing and presentation identity.
 The UI client suite includes live handler redefinition/advice and 70 renderer
 reconnects. The [retained ADR critique](adr-002-review.md) remains the historical
 review, not a claim that its original deficiencies still describe the current API.
+
+
+## Notifications
+
+Twelve private-bus backend tests cover ownership refusal, replacement, actions,
+expiry, bounded persistence, slow clients and process cleanup. Scheme tests
+exercise generation-bound controls, retired button keys, paging and privacy.
+Four new PNGs cover active/history/DND layouts and retained RGBA images; all
+were inspected at 1× and compared exactly by the GPU tests.
+
+The [native smoke evidence](../artifacts/notifications-native-proof.json) records
+an actual private-bus notification reaching the native 720×760 Scheme panel and
+Weft publisher. Renderer, controller and server exited successfully and removed
+their sockets. The test made no notification-name request on the host bus.

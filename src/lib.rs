@@ -31,3 +31,4 @@ pub mod path;
 
 pub mod bluetooth;
 pub mod bluetooth_agent;
+pub mod notifications;
