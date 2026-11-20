@@ -1,0 +1,15 @@
+{
+  "channel": "audio",
+  "status": "available",
+  "node_count": 26,
+  "native_size": [
+    720,
+    760
+  ],
+  "private_audio_nodes": 2,
+  "host_actions_sent": 0,
+  "weft_publication_exit": 0,
+  "controller_exit": 0,
+  "renderer_exit": 0,
+  "socket_removed": true
+}

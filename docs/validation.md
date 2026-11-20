@@ -105,9 +105,9 @@ preserving the last observation timestamp. The publication budget is 120 KiB.
 
 ## Automated checks
 
-The recorded final check run passed strict Clippy, 175 Rust tests including GPU
-snapshot comparisons, and seven Guile suites: activity export, service export,
-UI client, Weft watches, mirror, Bluetooth UI and Notifications UI. Focused checks cover atomic invalid updates,
+The recorded final check run passed strict Clippy, 183 Rust tests including GPU
+snapshot comparisons, and eight Guile suites: activity export, service export,
+UI client, Weft watches, mirror, Bluetooth UI, Notifications UI and Audio UI. Focused checks cover atomic invalid updates,
 producer ownership, disconnect/reconnect, more than 64 epochs, optional fields,
 partial input, bounded clients/queues, input routing and presentation identity.
 The UI client suite includes live handler redefinition/advice and 70 renderer
@@ -127,3 +127,19 @@ The [native smoke evidence](../artifacts/notifications-native-proof.json) record
 an actual private-bus notification reaching the native 720×760 Scheme panel and
 Weft publisher. Renderer, controller and server exited successfully and removed
 their sockets. The test made no notification-name request on the host bus.
+
+## PipeWire
+
+The private daemon fixture supplies synthetic sink/source nodes and default
+metadata without hardware or session-manager modules. Tests independently read
+back volume, mute and configured defaults; reject stale session/serials; reconnect
+after server loss; and stop with partial input or blocked output. State tests
+cover perceptual scaling, bounds, capabilities and identity checks.
+
+Four Scheme-generated PNGs cover outputs, inputs, applications and unavailable
+state. All were inspected at 1×. Effective and requested defaults are distinct,
+and inventories show paging counts. The [native smoke evidence](../artifacts/audio-native-proof.json)
+records two private audio nodes reaching the 720×760 panel and Weft publisher,
+with clean process and socket teardown and no host audio mutations. Physical
+hardware route controls are implemented but were not exercised on the owner's
+audio devices during this validation.

@@ -7,6 +7,7 @@ license = "GPL-3.0-or-later"
 description = "Native scene graph and Weft workspace UI"
 
 [dependencies]
+pipewire = "0.10.1"
 lyon_path = "1"
 lyon_tessellation = "1"
 anyhow = "1"

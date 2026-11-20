@@ -136,3 +136,10 @@ Only the implemented `body` and `actions` capabilities are advertised.
 Private-bus tests cover name refusal, replacement, stale actions, signals,
 expiry, persistence, slow subscribers, restart and shutdown. They never acquire
 the notification name on the user's session bus.
+
+## PipeWire
+
+The [native audio worker and Scheme controls](audio.md) expose bounded device,
+node, volume, mute and default state. Weft observations use `hearth-pipewire`.
+Controls bind the current connection and node identity; tests use an isolated
+PipeWire daemon with synthetic input/output nodes.
